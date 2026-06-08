@@ -1,0 +1,12 @@
+services:
+  bot:
+    build: .
+    image: bot_logs
+    container_name: bot_logs
+    restart: always
+    # La configuration et les secrets viennent du fichier .env (jamais commité).
+    env_file: .env
+    # Persiste la base SQLite et les logs hors du conteneur.
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs

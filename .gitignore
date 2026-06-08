@@ -1,0 +1,26 @@
+# Secrets / configuration locale
+.env
+
+# Base de données locale
+*.db
+*.sqlite
+*.sqlite3
+data/
+
+# Logs
+*.log
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+
+# IDE
+.idea/
+.vscode/
