@@ -252,33 +252,6 @@ docker run -d --restart=always --env-file .env \
   -v "$PWD/data:/app/data" -v "$PWD/logs:/app/logs" bot_logs
 ```
 
-### Déploiement continu (self-hosted runner)
-
-Le déploiement sur la VM est automatisé : à chaque **CI réussie sur `main`**, le
-workflow `Deploy` (`.github/workflows/deploy.yml`) exécute `scripts/deploy.sh`,
-qui **pull puis reconstruit le conteneur uniquement s'il y a un nouveau commit**.
-
-**Mise en place (une fois) sur la VM :**
-
-1. **Installer le runner self-hosted** : dans GitHub → *Settings → Actions →
-   Runners → New self-hosted runner*, suivre les commandes affichées sur la VM.
-   - Ajouter le **label** `bot_logs` (`./config.sh --labels bot_logs …`).
-   - L'installer **en service** pour qu'il survive aux reboots :
-     `sudo ./svc.sh install && sudo ./svc.sh start`.
-2. **Pré-requis du compte du runner** : appartenir au groupe `docker` (pour
-   `docker compose` sans sudo) et avoir accès en lecture au dépôt git de prod.
-3. **Indiquer le chemin de prod** : GitHub → *Settings → Secrets and variables →
-   Actions → Variables* → créer `DEPLOY_PATH` = chemin du dépôt sur la VM
-   (ex. `/opt/bot_logs`). À défaut, `~/bot_logs` est utilisé.
-
-Ensuite, chaque merge sur `main` déclenche le déploiement. Déclenchement manuel
-possible via *Actions → Deploy → Run workflow*. Le script reste utilisable à la
-main sur la VM : `./scripts/deploy.sh`.
-
-> Le déploiement est en *fast-forward only* : si l'arbre de prod a divergé
-> (commits/édits locaux), le script s'arrête au lieu d'écraser — corrige l'état
-> de la VM puis relance.
-
 ## Tests
 
 ```bash
