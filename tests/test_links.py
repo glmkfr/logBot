@@ -51,3 +51,31 @@ def test_wcl_fight_url():
 def test_wowanalyzer_url():
     assert links.wowanalyzer_url("abc", 7) == "https://wowanalyzer.com/report/abc/7"
     assert links.wowanalyzer_url("abc") == "https://wowanalyzer.com/report/abc"
+
+
+def test_find_warcraftlogs_url_in_text():
+    text = "Regardez ça : https://www.warcraftlogs.com/reports/aBc123#fight=2 c'était chaud !"
+    assert (
+        links.find_warcraftlogs_url(text)
+        == "https://www.warcraftlogs.com/reports/aBc123#fight=2"
+    )
+
+
+def test_find_warcraftlogs_url_strips_trailing_punctuation():
+    # Ponctuation de fin et chevrons retirés avant validation.
+    assert (
+        links.find_warcraftlogs_url("voir (https://warcraftlogs.com/reports/Kk99Zz).")
+        == "https://warcraftlogs.com/reports/Kk99Zz"
+    )
+    assert (
+        links.find_warcraftlogs_url("<https://fr.warcraftlogs.com/reports/Xy77>")
+        == "https://fr.warcraftlogs.com/reports/Xy77"
+    )
+
+
+def test_find_warcraftlogs_url_rejects_fakes_and_empty():
+    assert links.find_warcraftlogs_url("https://fakewarcraftlogs.com/reports/abc") is None
+    assert links.find_warcraftlogs_url("aucun lien ici") is None
+    assert links.find_warcraftlogs_url("") is None
+    # Domaine valide mais sans code de rapport => non exploitable.
+    assert links.find_warcraftlogs_url("https://www.warcraftlogs.com/zone/12") is None

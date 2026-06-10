@@ -1,5 +1,8 @@
 """Tests du stockage SQLite : anti-doublon et statistiques."""
 
+import datetime
+import os
+
 from bot.db import Database
 
 
@@ -65,4 +68,69 @@ def test_raid_thread_dedup(tmp_path):
     assert db.record_raid_thread("R", "Naxxramas", 555) is True
     assert db.get_raid_thread("R", "Naxxramas") == 555
     assert db.record_raid_thread("R", "Naxxramas", 666) is False
+    db.close()
+
+
+def _record(db, *, code, fight, dungeon, level, timed, time_ms=1000):
+    db.record_run(
+        report_code=code, fight_id=fight, kind="mplus", dungeon=dungeon,
+        level=level, timed=timed, keystone_time=time_ms, encounter_id=None,
+        date="01/01", thread_id=fight,
+    )
+
+
+def test_stats_best_key(tmp_path):
+    db = _db(tmp_path)
+    _record(db, code="A", fight=1, dungeon="Skyreach", level=20, timed=True)
+    _record(db, code="A", fight=2, dungeon="Pit of Saron", level=24, timed=False)  # non timée
+    _record(db, code="A", fight=3, dungeon="Skyreach", level=22, timed=True)
+    s = db.stats()
+    # La meilleure clé TIMÉE est +22 Skyreach (la +24 n'est pas timée).
+    assert s.best_level == 22
+    assert s.best_dungeon == "Skyreach"
+    db.close()
+
+
+def test_leaderboard(tmp_path):
+    db = _db(tmp_path)
+    # Skyreach : record +22 (deux temps au niveau record => on garde le plus court).
+    _record(db, code="A", fight=1, dungeon="Skyreach", level=22, timed=True, time_ms=900_000)
+    _record(db, code="A", fight=2, dungeon="Skyreach", level=22, timed=True, time_ms=800_000)
+    _record(db, code="A", fight=3, dungeon="Skyreach", level=18, timed=True)
+    # Pit of Saron : seule clé timée +16 ; une +25 non timée ne compte pas.
+    _record(db, code="B", fight=1, dungeon="Pit of Saron", level=16, timed=True)
+    _record(db, code="B", fight=2, dungeon="Pit of Saron", level=25, timed=False)
+
+    board = db.leaderboard()
+    by_dungeon = {e.dungeon: e for e in board}
+    assert by_dungeon["Skyreach"].best_level == 22
+    assert by_dungeon["Skyreach"].best_time_ms == 800_000  # le plus court au niveau record
+    assert by_dungeon["Skyreach"].timed_count == 3
+    assert by_dungeon["Pit of Saron"].best_level == 16
+    # Tri : Skyreach (+22) avant Pit of Saron (+16).
+    assert board[0].dungeon == "Skyreach"
+    db.close()
+
+
+def test_weekly_counts_length_and_recent(tmp_path):
+    db = _db(tmp_path)
+    _record(db, code="A", fight=1, dungeon="Skyreach", level=20, timed=True)
+    trend = db.weekly_counts(weeks=6)
+    assert len(trend) == 6
+    # Le run vient d'être inséré (created_at = maintenant) => compté dans la dernière semaine.
+    assert trend[-1][1] == 1
+    assert sum(n for _, n in trend) == 1
+    db.close()
+
+
+def test_backup_creates_readable_copy(tmp_path):
+    db = _db(tmp_path)
+    _record(db, code="A", fight=1, dungeon="Skyreach", level=20, timed=True)
+    dest = str(tmp_path / "backups" / "copy.db")
+    db.backup(dest)
+    assert os.path.exists(dest)
+    # La copie est une base SQLite valide contenant le run.
+    copy = Database(dest)
+    assert copy.stats().total == 1
+    copy.close()
     db.close()

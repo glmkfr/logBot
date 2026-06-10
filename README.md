@@ -35,9 +35,16 @@ statistiques, et boutons pour ajouter route/VoD a posteriori.
   (le kill, sinon le meilleur essai). Pas de mapping perso↔Discord.
 - **Paramètres `route:` / `vod:`** sur `/logs`, et **boutons** qui **éditent
   l'embed** du fil pour y afficher la route / la VoD (persistées en base).
-- **`/stats`** : nombre de clés, % timées, niveau moyen, répartition par donjon.
+- **`/stats`** : nombre de clés, % timées, niveau moyen, **meilleure clé timée**,
+  répartition par donjon et **tendance hebdomadaire** (mini-graphe 6 semaines).
+- **`/leaderboard`** : meilleure clé Mythique+ **timée par donjon** (niveau record,
+  meilleur temps à ce niveau, nombre de clés timées).
+- **Auto-détection** : coller un lien Warcraft Logs dans un canal configuré
+  (`AUTO_DETECT_CHANNEL_IDS`) crée les fils automatiquement, sans taper `/logs`.
 - **Récap hebdomadaire automatique** : poste les stats de la semaine dans un
   canal configurable (jour/heure réglables).
+- **Supervision & sauvegarde** : *heartbeat* + healthcheck Docker, et
+  **sauvegarde SQLite quotidienne** avec rotation.
 - **Sécurité** : restriction par rôles, validation du domaine `warcraftlogs.com`,
   logs sans secrets.
 
@@ -104,6 +111,10 @@ Toute la configuration passe par `.env` (jamais de secret en dur). Variables :
 | `RECAP_CHANNEL_ID` | non | Canal du récap hebdomadaire. Vide = récap désactivé |
 | `RECAP_WEEKDAY` | non | Jour du récap : 0 = lundi … 6 = dimanche (défaut 0) |
 | `RECAP_HOUR` | non | Heure locale du récap, 0–23 (défaut 10) |
+| `AUTO_DETECT_CHANNEL_IDS` | non | IDs de canaux où un lien WCL collé crée les fils sans `/logs` (virgules). Vide = désactivé. **Requiert l'intent privilégié *Message Content*.** |
+| `HEARTBEAT_FILE` | non | Fichier de battement de cœur lu par le healthcheck (défaut `data/heartbeat`) |
+| `BACKUP_DIR` | non | Dossier des sauvegardes SQLite quotidiennes (défaut `data/backups`). Vide = désactivé |
+| `BACKUP_KEEP` | non | Nombre de sauvegardes conservées par rotation (défaut 7) |
 
 > ⚠️ **Sécurité** : si vous reprenez ce projet, les anciens secrets qui étaient
 > codés en dur dans `bot_logs.py` doivent être **révoqués/régénérés**
@@ -120,8 +131,10 @@ Toute la configuration passe par `.env` (jamais de secret en dur). Variables :
 
 Dans le Developer Portal Discord (https://discord.com/developers/applications) :
 - Onglet **Bot** : créez le bot, copiez le token.
-- **Privileged Intents** : aucun intent privilégié n'est requis
-  (le bot n'utilise pas `members`/`message_content`).
+- **Privileged Intents** : aucun intent privilégié n'est requis par défaut.
+  ⚠️ **Exception** : si vous activez l'auto-détection (`AUTO_DETECT_CHANNEL_IDS`),
+  cochez **Message Content Intent** (onglet *Bot* > *Privileged Gateway Intents*),
+  sinon le bot ne pourra pas lire les liens collés dans le chat.
 - **OAuth2 > URL Generator** : scopes `bot` + `applications.commands`.
 - Permissions du bot dans le canal Forum :
   - *View Channel*, *Send Messages*, *Create Posts* (threads),
@@ -153,7 +166,13 @@ Les slash-commands sont synchronisées sur le `GUILD_ID` au démarrage
 - `/logs lien:<url> [niveau_min:<n>] [route:<url>] [vod:<url>]` — crée le(s)
   fil(s) du rapport. `niveau_min` ne publie que les clés `>= n` (défaut :
   `MIN_KEY_LEVEL` du `.env`). Ex. `niveau_min:15` ⇒ uniquement les +15 et plus.
-- `/stats [periode: semaine|mois|tout]` — statistiques M+.
+- `/stats [periode: semaine|mois|tout]` — statistiques M+ (avec meilleure clé
+  timée et, sur la vue globale, la tendance des 6 dernières semaines).
+- `/leaderboard` — meilleure clé timée par donjon (niveau record + meilleur temps).
+
+**Auto-détection** : si `AUTO_DETECT_CHANNEL_IDS` est renseigné, coller un lien
+`warcraftlogs.com/reports/...` dans l'un de ces canaux déclenche le même
+traitement que `/logs` (mêmes restrictions de rôle, anti-doublon inclus).
 
 Sous chaque fil créé : boutons **« Ajouter la route »** / **« Ajouter la VoD »**
 (modale → message posté dans le fil). Les boutons sont persistants (survivent
@@ -200,6 +219,27 @@ pm2 save && pm2 startup
 
 Un `Dockerfile` et un `docker-compose.yml` sont fournis (utilisateur non-root,
 SQLite et logs persistés via volumes).
+
+> **Permissions des volumes** : les dossiers montés (`./data`, `./logs`) doivent
+> appartenir à l'uid du conteneur (`1000`), sinon le bot ne peut pas écrire
+> (`PermissionError`). Sur l'hôte : `sudo chown -R 1000:1000 ./data ./logs`.
+
+**Healthcheck** : le conteneur expose un healthcheck (`python -m bot.healthcheck`)
+qui vérifie un fichier de *heartbeat* touché chaque minute tant que la passerelle
+Discord est saine. `docker ps` affiche alors `healthy` / `unhealthy`. Pour
+**redémarrer automatiquement** sur `unhealthy`, ajoutez un conteneur autoheal :
+
+```yaml
+  autoheal:
+    image: willfarrell/autoheal
+    restart: always
+    environment: { AUTOHEAL_CONTAINER_LABEL: all }
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+```
+
+**Sauvegardes** : une copie compacte (`VACUUM INTO`) de la base est écrite chaque
+jour dans `BACKUP_DIR` (défaut `data/backups`, persisté via le volume `./data`),
+avec rotation sur les `BACKUP_KEEP` dernières (défaut 7).
 
 ```bash
 # Avec docker compose (recommandé) : lit .env, monte ./data et ./logs

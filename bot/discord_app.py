@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import glob
 import logging
+import os
 
 import discord
 from discord import app_commands
@@ -140,6 +142,12 @@ class BotLogsClient(discord.Client):
 
     def __init__(self, config: Config):
         intents = discord.Intents.default()
+        # L'auto-détection lit le contenu des messages : intent privilégié requis
+        # (à activer dans le Developer Portal). Activé seulement si la feature
+        # est configurée, pour ne rien imposer aux installations qui ne s'en
+        # servent pas.
+        if config.auto_detect_channel_ids:
+            intents.message_content = True
         super().__init__(intents=intents)
         self.config = config
         self.tree = app_commands.CommandTree(self)
@@ -159,10 +167,17 @@ class BotLogsClient(discord.Client):
         # Démarre le récap hebdomadaire si un canal est configuré.
         if self.config.recap_channel_id and not self.weekly_recap_loop.is_running():
             self.weekly_recap_loop.start()
+        # Battement de cœur pour le healthcheck Docker.
+        if not self.heartbeat_loop.is_running():
+            self.heartbeat_loop.start()
+        # Sauvegarde quotidienne de la base (si un dossier est configuré).
+        if self.config.backup_dir and not self.backup_loop.is_running():
+            self.backup_loop.start()
 
     async def close(self) -> None:
-        if self.weekly_recap_loop.is_running():
-            self.weekly_recap_loop.cancel()
+        for loop in (self.weekly_recap_loop, self.heartbeat_loop, self.backup_loop):
+            if loop.is_running():
+                loop.cancel()
         await self.wcl.__aexit__(None, None, None)
         self.db.close()
         await super().close()
@@ -206,6 +221,94 @@ class BotLogsClient(discord.Client):
 
     async def on_ready(self) -> None:
         log.info("Connecté en tant que %s (guild=%s)", self.user, self.config.guild_id)
+
+    # -- Supervision (heartbeat) & sauvegarde --------------------------------
+
+    @tasks.loop(minutes=1)
+    async def heartbeat_loop(self) -> None:
+        """Touche un fichier tant que la passerelle Discord est saine.
+
+        Le healthcheck Docker (`python -m bot.healthcheck`) vérifie la fraîcheur
+        de ce fichier : s'il n'est plus mis à jour (boucle d'événements bloquée,
+        passerelle déconnectée durablement), le conteneur est marqué *unhealthy*.
+        """
+        if not self.is_ready():
+            return
+        path = self.config.heartbeat_file
+        try:
+            if os.path.dirname(path):
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(datetime.datetime.now().isoformat(timespec="seconds"))
+        except OSError as exc:
+            log.warning("Impossible d'écrire le heartbeat (%s) : %s", path, exc)
+
+    @heartbeat_loop.before_loop
+    async def _before_heartbeat(self) -> None:
+        await self.wait_until_ready()
+
+    @tasks.loop(hours=24)
+    async def backup_loop(self) -> None:
+        """Sauvegarde quotidienne de la base SQLite, avec rotation."""
+        await asyncio.to_thread(self._run_backup)
+
+    @backup_loop.before_loop
+    async def _before_backup(self) -> None:
+        await self.wait_until_ready()
+
+    def _run_backup(self) -> None:
+        """Écrit une sauvegarde horodatée et ne conserve que les N plus récentes."""
+        bdir = self.config.backup_dir
+        if not bdir:
+            return
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        dest = os.path.join(bdir, f"bot_logs-{stamp}.db")
+        try:
+            self.db.backup(dest)
+        except Exception:  # noqa: BLE001 — une sauvegarde ratée ne doit pas crasher
+            log.exception("Échec de la sauvegarde SQLite vers %s", dest)
+            return
+        # Rotation : on garde les `backup_keep` fichiers les plus récents.
+        existing = sorted(glob.glob(os.path.join(bdir, "bot_logs-*.db")))
+        for old in existing[: -self.config.backup_keep]:
+            try:
+                os.remove(old)
+            except OSError:
+                pass
+        log.info("Sauvegarde SQLite écrite : %s", dest)
+
+    # -- Auto-détection des liens Warcraft Logs collés dans le chat -----------
+
+    async def on_message(self, message: discord.Message) -> None:
+        """Crée les fils d'un rapport dès qu'un lien WCL est collé dans un canal suivi."""
+        if not self.config.auto_detect_channel_ids:
+            return
+        if message.author.bot or message.author.id == (self.user.id if self.user else 0):
+            return
+        if message.channel.id not in self.config.auto_detect_channel_ids:
+            return
+        # Même restriction de rôle que /logs (si configurée).
+        if self.config.allowed_role_ids:
+            member = message.author
+            allowed = isinstance(member, discord.Member) and (
+                {r.id for r in member.roles} & set(self.config.allowed_role_ids)
+            )
+            if not allowed:
+                return
+
+        url = links.find_warcraftlogs_url(message.content)
+        if not url:
+            return
+
+        log.info("Auto-détection d'un lien WCL dans #%s", getattr(message.channel, "name", "?"))
+        try:
+            async with message.channel.typing():
+                results = await process_logs(self, url)
+        except Exception as exc:  # noqa: BLE001
+            await self.report_error("Auto-détection", exc)
+            return
+        if results:
+            await message.reply("\n".join(results), mention_author=False)
 
     # -- Journalisation des erreurs vers un canal Discord (sans secret) -------
 
@@ -319,7 +422,16 @@ def build_mplus_embed(
     return embed
 
 
-def build_stats_embed(data, title: str) -> discord.Embed:
+def _sparkbars(counts: list[int]) -> str:
+    """Mini histogramme en blocs Unicode (▁▂▃▄▅▆▇█) normalisé sur le max."""
+    blocks = "▁▂▃▄▅▆▇█"
+    peak = max(counts) if counts else 0
+    if peak == 0:
+        return blocks[0] * len(counts)
+    return "".join(blocks[min(len(blocks) - 1, round(c / peak * (len(blocks) - 1)))] for c in counts)
+
+
+def build_stats_embed(data, title: str, trend: list[tuple[str, int]] | None = None) -> discord.Embed:
     """Embed de statistiques M+ (réutilisé par /stats et le récap hebdo)."""
     embed = discord.Embed(title=title, color=discord.Color.blurple())
     embed.add_field(name="Clés", value=str(data.total), inline=True)
@@ -327,11 +439,42 @@ def build_stats_embed(data, title: str) -> discord.Embed:
         name="Timées", value=f"{data.timed} ({data.timed_pct:.0f} %)", inline=True
     )
     embed.add_field(name="Niveau moyen", value=f"+{data.avg_level:.1f}", inline=True)
+    if data.best_level:
+        best = f"+{data.best_level}"
+        if data.best_dungeon:
+            best += f" — {logic.abbreviate(data.best_dungeon)}"
+        embed.add_field(name="Meilleure clé timée", value=best, inline=True)
     if data.by_dungeon:
         breakdown = "\n".join(
             f"{logic.abbreviate(d)} : {n}" for d, n in data.by_dungeon.items()
         )
         embed.add_field(name="Par donjon", value=breakdown, inline=False)
+    if trend:
+        counts = [n for _, n in trend]
+        bars = _sparkbars(counts)
+        labels = " ".join(lbl for lbl, _ in trend)
+        embed.add_field(
+            name=f"Tendance ({len(trend)} dern. semaines)",
+            value=f"`{bars}`  ({counts[0]} → {counts[-1]} /sem.)\n{labels}",
+            inline=False,
+        )
+    return embed
+
+
+def build_leaderboard_embed(entries: list, title: str) -> discord.Embed:
+    """Embed du classement des meilleures clés timées par donjon."""
+    embed = discord.Embed(title=title, color=discord.Color.gold())
+    medals = {0: "🥇", 1: "🥈", 2: "🥉"}
+    lines = []
+    for i, e in enumerate(entries):
+        rank = medals.get(i, f"`{i + 1}.`")
+        time_str = logic.format_duration(e.best_time_ms)
+        suffix = f" en {time_str}" if time_str else ""
+        lines.append(
+            f"{rank} **{logic.abbreviate(e.dungeon)}** — +{e.best_level}{suffix} "
+            f"_({e.timed_count} timée{'s' if e.timed_count > 1 else ''})_"
+        )
+    embed.description = "\n".join(lines)
     return embed
 
 
@@ -387,76 +530,11 @@ def register_commands(bot: BotLogsClient) -> None:
         vod: str | None = None,
     ):
         await interaction.response.defer(ephemeral=True)
-
-        # 1) Validation du lien (doit pointer vers warcraftlogs.com).
-        if not links.is_warcraftlogs_url(lien):
-            await interaction.followup.send(
-                "Lien invalide : seul warcraftlogs.com est accepté."
-            )
-            return
-        code = links.extract_report_code(lien)
-        if not code:
-            await interaction.followup.send(
-                "Lien Warcraft Logs invalide (pas de code de rapport)."
-            )
-            return
-
-        # 2) Récupération du rapport.
-        try:
-            report = await bot.wcl.fetch_report(code)
-        except WCLError as exc:
-            await interaction.followup.send(f"Erreur côté Warcraft Logs : {exc}")
-            return
-        except Exception as exc:  # noqa: BLE001
-            await bot.report_error("Récupération du rapport", exc)
-            await interaction.followup.send(
-                "Erreur inattendue lors de la récupération du rapport."
-            )
-            return
-
-        if not report:
-            await interaction.followup.send(
-                "Rapport introuvable (ou privé). Vérifie le lien."
-            )
-            return
-
-        forum = bot.get_channel(config.forum_channel_id)
-        if not isinstance(forum, discord.ForumChannel):
-            await interaction.followup.send("Le canal configuré n'est pas un forum.")
-            return
-
-        # 3) Traitement M+ et raid.
-        runs = logic.extract_keystone_runs(report)
-        raid_encounters = logic.extract_raid_encounters(report)
-
-        if not runs and not raid_encounters:
-            await interaction.followup.send(
-                "Aucune clé M+ ni boss de raid trouvé dans ce rapport. "
-                "(Lance avec DEBUG=1 pour inspecter les données.)"
-            )
-            return
-
-        messages: list[str] = []
-
         # Seuil effectif : paramètre de la commande sinon valeur de config.
         threshold = niveau_min if niveau_min is not None else config.min_key_level
-
-        try:
-            await _handle_mplus(
-                bot, interaction, forum, report, runs, lien, route, vod,
-                messages, threshold,
-            )
-            await _handle_raid(
-                bot, forum, report, raid_encounters, lien, messages
-            )
-        except Exception as exc:  # noqa: BLE001
-            await bot.report_error("Création des fils", exc)
-            await interaction.followup.send(
-                "Une erreur est survenue pendant la création des fils. "
-                "Certains fils ont pu être créés."
-            )
-            return
-
+        messages = await process_logs(
+            bot, lien, route=route, vod=vod, threshold=threshold
+        )
         if not messages:
             await interaction.followup.send(
                 "Rien de nouveau à publier (tout est déjà présent dans le forum)."
@@ -480,19 +558,25 @@ def register_commands(bot: BotLogsClient) -> None:
         description="Statistiques des clés Mythique+ publiées",
         guild=guild,
     )
-    @app_commands.describe(
-        periode="Fenêtre : 'semaine', 'mois' ou 'tout' (défaut : tout)"
+    @app_commands.describe(periode="Fenêtre temporelle (défaut : tout)")
+    @app_commands.choices(
+        periode=[
+            app_commands.Choice(name="7 derniers jours", value="semaine"),
+            app_commands.Choice(name="30 derniers jours", value="mois"),
+            app_commands.Choice(name="Depuis toujours", value="tout"),
+        ]
     )
-    async def stats(interaction: discord.Interaction, periode: str = "tout"):
+    async def stats(
+        interaction: discord.Interaction,
+        periode: app_commands.Choice[str] | None = None,
+    ):
         await interaction.response.defer()
 
-        import datetime
-
+        choice = periode.value if periode else "tout"
         since = None
-        periode = (periode or "tout").lower()
-        if periode in {"semaine", "week", "7j"}:
+        if choice == "semaine":
             since = (datetime.datetime.now() - datetime.timedelta(days=7)).isoformat()
-        elif periode in {"mois", "month", "30j"}:
+        elif choice == "mois":
             since = (datetime.datetime.now() - datetime.timedelta(days=30)).isoformat()
 
         data = await asyncio.to_thread(bot.db.stats, since)
@@ -500,12 +584,103 @@ def register_commands(bot: BotLogsClient) -> None:
             await interaction.followup.send("Aucune clé enregistrée pour cette période.")
             return
 
+        # Tendance hebdo : seulement sur la vue globale (sinon redondant avec la fenêtre).
+        trend = None
+        if choice == "tout":
+            trend = await asyncio.to_thread(bot.db.weekly_counts, 6)
+
         label = {"semaine": "7 derniers jours", "mois": "30 derniers jours"}.get(
-            periode, "depuis toujours"
+            choice, "depuis toujours"
         )
         await interaction.followup.send(
-            embed=build_stats_embed(data, f"Statistiques Mythique+ — {label}")
+            embed=build_stats_embed(data, f"Statistiques Mythique+ — {label}", trend)
         )
+
+    @bot.tree.command(
+        name="leaderboard",
+        description="Meilleure clé Mythique+ timée par donjon",
+        guild=guild,
+    )
+    async def leaderboard(interaction: discord.Interaction):
+        await interaction.response.defer()
+        entries = await asyncio.to_thread(bot.db.leaderboard)
+        if not entries:
+            await interaction.followup.send(
+                "Aucune clé timée enregistrée pour l'instant."
+            )
+            return
+        await interaction.followup.send(
+            embed=build_leaderboard_embed(entries, "🏆 Records Mythique+ par donjon")
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Traitement d'un rapport (partagé par /logs et l'auto-détection)
+# --------------------------------------------------------------------------- #
+
+async def process_logs(
+    bot: BotLogsClient,
+    lien: str,
+    *,
+    route: str | None = None,
+    vod: str | None = None,
+    threshold: int | None = None,
+) -> list[str]:
+    """Valide un lien, récupère le rapport et crée les fils M+/raid.
+
+    Retourne la liste des messages de compte rendu (succès, doublons, erreurs)
+    à afficher par l'appelant. Ne lève pas pour les erreurs attendues : elles
+    sont transformées en message. Partagé par la commande /logs et le handler
+    d'auto-détection pour garantir un comportement identique.
+    """
+    if threshold is None:
+        threshold = bot.config.min_key_level
+
+    # 1) Validation du lien (doit pointer vers warcraftlogs.com).
+    if not links.is_warcraftlogs_url(lien):
+        return ["Lien invalide : seul warcraftlogs.com est accepté."]
+    code = links.extract_report_code(lien)
+    if not code:
+        return ["Lien Warcraft Logs invalide (pas de code de rapport)."]
+
+    # 2) Récupération du rapport.
+    try:
+        report = await bot.wcl.fetch_report(code)
+    except WCLError as exc:
+        return [f"Erreur côté Warcraft Logs : {exc}"]
+    except Exception as exc:  # noqa: BLE001
+        await bot.report_error("Récupération du rapport", exc)
+        return ["Erreur inattendue lors de la récupération du rapport."]
+
+    if not report:
+        return ["Rapport introuvable (ou privé). Vérifie le lien."]
+
+    forum = bot.get_channel(bot.config.forum_channel_id)
+    if not isinstance(forum, discord.ForumChannel):
+        return ["Le canal configuré n'est pas un forum."]
+
+    # 3) Traitement M+ et raid.
+    runs = logic.extract_keystone_runs(report)
+    raid_encounters = logic.extract_raid_encounters(report)
+    if not runs and not raid_encounters:
+        return [
+            "Aucune clé M+ ni boss de raid trouvé dans ce rapport. "
+            "(Lance avec DEBUG=1 pour inspecter les données.)"
+        ]
+
+    messages: list[str] = []
+    try:
+        await _handle_mplus(
+            bot, forum, report, runs, lien, route, vod, messages, threshold
+        )
+        await _handle_raid(bot, forum, report, raid_encounters, lien, messages)
+    except Exception as exc:  # noqa: BLE001
+        await bot.report_error("Création des fils", exc)
+        messages.append(
+            "Une erreur est survenue pendant la création des fils. "
+            "Certains fils ont pu être créés."
+        )
+    return messages
 
 
 # --------------------------------------------------------------------------- #
@@ -514,7 +689,6 @@ def register_commands(bot: BotLogsClient) -> None:
 
 async def _handle_mplus(
     bot: BotLogsClient,
-    interaction: discord.Interaction,
     forum: discord.ForumChannel,
     report: dict,
     runs: list[logic.KeystoneRun],

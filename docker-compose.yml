@@ -6,7 +6,15 @@ services:
     restart: always
     # La configuration et les secrets viennent du fichier .env (jamais commité).
     env_file: .env
-    # Persiste la base SQLite et les logs hors du conteneur.
+    # Persiste la base SQLite (et ses sauvegardes) + les logs hors du conteneur.
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
+    # Marque le conteneur unhealthy si le bot ne touche plus son heartbeat
+    # (passerelle Discord déconnectée durablement, boucle d'événements bloquée).
+    healthcheck:
+      test: ["CMD", "python", "-m", "bot.healthcheck"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
