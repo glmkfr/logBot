@@ -60,10 +60,23 @@ class Stats:
     timed: int
     avg_level: float
     by_dungeon: dict[str, int]
+    # Meilleure clé timée (niveau le plus haut) et son donjon. None si aucune.
+    best_level: int | None = None
+    best_dungeon: str | None = None
 
     @property
     def timed_pct(self) -> float:
         return (self.timed / self.total * 100.0) if self.total else 0.0
+
+
+@dataclass
+class LeaderboardEntry:
+    """Meilleure performance timée d'un donjon (pour /leaderboard)."""
+
+    dungeon: str
+    best_level: int
+    best_time_ms: int | None  # meilleur temps au niveau record (None si absent)
+    timed_count: int          # nombre total de clés timées sur ce donjon
 
 
 class Database:
@@ -222,6 +235,96 @@ class Database:
             )
             by_dungeon = {r["dungeon"] or "?": r["n"] for r in cur.fetchall()}
 
+            # Meilleure clé timée de la période (niveau le plus haut).
+            cur = self._conn.execute(
+                f"SELECT dungeon, level FROM runs {where} AND timed = 1 "
+                f"ORDER BY level DESC LIMIT 1",
+                params,
+            )
+            best = cur.fetchone()
+            best_level = best["level"] if best else None
+            best_dungeon = (best["dungeon"] if best else None) or None
+
         return Stats(
-            total=total, timed=timed, avg_level=avg_level, by_dungeon=by_dungeon
+            total=total,
+            timed=timed,
+            avg_level=avg_level,
+            by_dungeon=by_dungeon,
+            best_level=best_level,
+            best_dungeon=best_dungeon,
         )
+
+    def leaderboard(self) -> list[LeaderboardEntry]:
+        """Classement : meilleure clé timée par donjon (niveau, puis temps).
+
+        Pour chaque donjon, on retient le niveau timé le plus élevé jamais
+        publié, le meilleur (plus court) temps à ce niveau et le nombre total de
+        clés timées. Les donjons sans aucune clé timée sont absents.
+        """
+        query = """
+            SELECT r.dungeon                AS dungeon,
+                   r.level                  AS best_level,
+                   MIN(r.keystone_time)     AS best_time,
+                   (SELECT COUNT(*) FROM runs c
+                     WHERE c.kind = 'mplus' AND c.timed = 1
+                       AND c.dungeon IS r.dungeon) AS timed_count
+            FROM runs r
+            WHERE r.kind = 'mplus' AND r.timed = 1
+              AND r.level = (
+                  SELECT MAX(m.level) FROM runs m
+                  WHERE m.kind = 'mplus' AND m.timed = 1 AND m.dungeon IS r.dungeon
+              )
+            GROUP BY r.dungeon
+            ORDER BY best_level DESC, best_time IS NULL, best_time ASC, dungeon ASC
+        """
+        with self._lock:
+            cur = self._conn.execute(query)
+            return [
+                LeaderboardEntry(
+                    dungeon=row["dungeon"] or "?",
+                    best_level=row["best_level"],
+                    best_time_ms=row["best_time"],
+                    timed_count=row["timed_count"],
+                )
+                for row in cur.fetchall()
+            ]
+
+    def weekly_counts(self, weeks: int = 6) -> list[tuple[str, int]]:
+        """Nombre de clés M+ par semaine ISO, des plus anciennes aux récentes.
+
+        Retourne `weeks` entrées (les plus anciennes à zéro si pas de données),
+        chacune étiquetée « S<numéro> » pour un mini-graphe de tendance.
+        Repose sur `created_at` (ISO), date de publication du run.
+        """
+        today = datetime.date.today()
+        # Lundi de la semaine courante, puis recule semaine par semaine.
+        monday = today - datetime.timedelta(days=today.weekday())
+        buckets: list[tuple[datetime.date, datetime.date]] = []
+        for i in range(weeks - 1, -1, -1):
+            start = monday - datetime.timedelta(weeks=i)
+            buckets.append((start, start + datetime.timedelta(days=7)))
+
+        with self._lock:
+            result: list[tuple[str, int]] = []
+            for start, end in buckets:
+                cur = self._conn.execute(
+                    "SELECT COUNT(*) AS n FROM runs "
+                    "WHERE kind = 'mplus' AND created_at >= ? AND created_at < ?",
+                    (start.isoformat(), end.isoformat()),
+                )
+                n = cur.fetchone()["n"] or 0
+                result.append((f"S{start.isocalendar().week:02d}", n))
+            return result
+
+    # -- Sauvegarde -----------------------------------------------------------
+
+    def backup(self, dest_path: str) -> None:
+        """Écrit une copie cohérente et compacte de la base vers `dest_path`.
+
+        Utilise `VACUUM INTO` (atomique, sans verrou long) ; le fichier de
+        destination ne doit pas déjà exister (l'appelant utilise un nom horodaté).
+        """
+        if os.path.dirname(dest_path):
+            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+        with self._lock:
+            self._conn.execute("VACUUM INTO ?", (dest_path,))

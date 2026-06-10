@@ -90,6 +90,15 @@ class Config:
     recap_weekday: int = 0  # 0 = lundi … 6 = dimanche
     recap_hour: int = 10    # heure locale du serveur
 
+    # Auto-détection : canaux où un lien WCL collé déclenche /logs sans commande.
+    # Vide = désactivé (et l'intent privilégié message_content n'est pas requis).
+    auto_detect_channel_ids: list[int] = field(default_factory=list)
+
+    # Supervision & sauvegarde.
+    heartbeat_file: str = "data/heartbeat"  # touché périodiquement (healthcheck)
+    backup_dir: str = "data/backups"        # vide = sauvegardes désactivées
+    backup_keep: int = 7                    # nombre de sauvegardes conservées
+
     @classmethod
     def from_env(cls) -> "Config":
         """Construit la configuration en validant les variables obligatoires."""
@@ -113,4 +122,9 @@ class Config:
             recap_channel_id=_optional_int("RECAP_CHANNEL_ID", None),
             recap_weekday=min(max(_optional_int("RECAP_WEEKDAY", 0) or 0, 0), 6),
             recap_hour=min(max(_optional_int("RECAP_HOUR", 10) or 10, 0), 23),
+            auto_detect_channel_ids=_id_list("AUTO_DETECT_CHANNEL_IDS"),
+            heartbeat_file=os.environ.get("HEARTBEAT_FILE", "data/heartbeat").strip()
+            or "data/heartbeat",
+            backup_dir=os.environ.get("BACKUP_DIR", "data/backups").strip(),
+            backup_keep=max(_optional_int("BACKUP_KEEP", 7) or 7, 1),
         )
