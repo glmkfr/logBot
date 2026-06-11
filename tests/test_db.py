@@ -155,6 +155,45 @@ def test_player_run_rows(tmp_path):
     db.close()
 
 
+def test_leaderboard_season_window(tmp_path):
+    db = _db(tmp_path)
+    _record(db, code="A", fight=1, dungeon="Skyreach", level=20, timed=True)
+    # Fenêtre future : la clé (créée maintenant) en est exclue.
+    assert db.leaderboard(since_iso="2999-01-01") == []
+    # Fenêtre large : la clé est présente.
+    board = db.leaderboard(since_iso="2000-01-01", until_iso="2999-01-01")
+    assert board and board[0].dungeon == "Skyreach"
+    db.close()
+
+
+def test_player_run_rows_window(tmp_path):
+    db = _db(tmp_path)
+    _record(db, code="A", fight=1, dungeon="Skyreach", level=20, timed=True)
+    db.record_run_players("A", 1, [("Alice", "Mage")])
+    assert db.player_run_rows(since_iso="2999-01-01") == []
+    assert len(db.player_run_rows(since_iso="2000-01-01", until_iso="2999-01-01")) == 1
+    db.close()
+
+
+def test_seasons_crud(tmp_path):
+    db = _db(tmp_path)
+    assert db.list_seasons() == []
+    s1 = db.add_season("S1", "2026-01-01")
+    db.add_season("S2", "2026-06-01")
+    # Tri par date de début croissante.
+    assert [s.name for s in db.list_seasons()] == ["S1", "S2"]
+    # Date de début dupliquée refusée.
+    assert db.add_season("dup", "2026-01-01") is None
+    # Recherche par nom insensible à la casse.
+    assert db.get_season_by_name("s2").start_date == "2026-06-01"
+    assert db.get_season_by_name("inconnue") is None
+    # Suppression.
+    assert db.delete_season(s1.id) is True
+    assert db.delete_season(999_999) is False
+    assert [s.name for s in db.list_seasons()] == ["S2"]
+    db.close()
+
+
 def test_member_links(tmp_path):
     db = _db(tmp_path)
     assert db.get_character_link("alice") is None

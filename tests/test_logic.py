@@ -199,6 +199,22 @@ def test_player_profile_stats_and_partners():
     assert dict(p.partners) == {222: 1, 333: 1}
 
 
+def test_current_season_and_bounds():
+    from bot.db import Season
+    seasons = [
+        Season(1, "S1", "2026-01-01"),
+        Season(2, "S2", "2026-06-01"),
+        Season(3, "S3", "2026-09-01"),
+    ]
+    # current_season : dernière saison débutée au plus tard à la date donnée.
+    assert logic.current_season(seasons, "2026-07-15").name == "S2"
+    assert logic.current_season(seasons, "2026-09-01").name == "S3"  # borne incluse
+    assert logic.current_season(seasons, "2025-12-31") is None
+    # bounds : du début de la saison au début de la suivante (None si dernière).
+    assert logic.season_bounds(seasons, seasons[1]) == ("2026-06-01", "2026-09-01")
+    assert logic.season_bounds(seasons, seasons[2]) == ("2026-09-01", None)
+
+
 def test_affix_label_known_and_unknown():
     assert logic.affix_label(10) == "Fortifié"
     assert logic.affix_label(999999) == "Affixe #999999"

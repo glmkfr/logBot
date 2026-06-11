@@ -80,6 +80,10 @@ class Config:
     debug: bool = False
     min_key_level: int = 2
     allowed_role_ids: list[int] = field(default_factory=list)
+    # Rôles « responsables » autorisés aux commandes d'administration du bot
+    # (gestion des saisons, /lier-admin…). Vide = repli sur la permission Discord
+    # « Gérer le serveur ».
+    admin_role_ids: list[int] = field(default_factory=list)
     database_path: str = "data/bot_logs.db"
     log_channel_id: int | None = None
     log_file: str | None = "logs/bot.log"
@@ -118,6 +122,7 @@ class Config:
             debug=os.environ.get("DEBUG", "0").strip() in {"1", "true", "True"},
             min_key_level=_optional_int("MIN_KEY_LEVEL", 2) or 2,
             allowed_role_ids=_id_list("ALLOWED_ROLE_IDS"),
+            admin_role_ids=_id_list("ADMIN_ROLE_IDS"),
             database_path=os.environ.get("DATABASE_PATH", "data/bot_logs.db").strip()
             or "data/bot_logs.db",
             log_channel_id=_optional_int("LOG_CHANNEL_ID", None),
