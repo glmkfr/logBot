@@ -148,6 +148,13 @@ class BotLogsClient(discord.Client):
         # servent pas.
         if config.auto_detect_channel_ids:
             intents.message_content = True
+        # Auto-match des joueurs du /leaderboard avec les pseudos Discord : lit
+        # la liste des membres du serveur, donc requiert l'intent privilégié
+        # « Server Members » (à cocher dans le Developer Portal). Gardé derrière
+        # un réglage pour ne pas faire planter la connexion des installations qui
+        # n'ont pas activé cet intent côté portail.
+        if config.enable_member_matching:
+            intents.members = True
         super().__init__(intents=intents)
         self.config = config
         self.tree = app_commands.CommandTree(self)
@@ -461,8 +468,15 @@ def build_stats_embed(data, title: str, trend: list[tuple[str, int]] | None = No
     return embed
 
 
-def build_leaderboard_embed(entries: list, title: str) -> discord.Embed:
-    """Embed du classement des meilleures clés timées par donjon."""
+def build_leaderboard_embed(
+    entries: list, title: str, member_ids: list[list[int]] | None = None
+) -> discord.Embed:
+    """Embed du classement des meilleures clés timées par donjon.
+
+    `member_ids` (facultatif) aligne, pour chaque entrée, les IDs Discord des
+    joueurs de la clé record présents sur le serveur. Quand il est fourni, leurs
+    pseudos sont mentionnés sous la ligne du donjon (aspect compétitif).
+    """
     embed = discord.Embed(title=title, color=discord.Color.gold())
     medals = {0: "🥇", 1: "🥈", 2: "🥉"}
     lines = []
@@ -474,8 +488,54 @@ def build_leaderboard_embed(entries: list, title: str) -> discord.Embed:
             f"{rank} **{logic.abbreviate(e.dungeon)}** — +{e.best_level}{suffix} "
             f"_({e.timed_count} timée{'s' if e.timed_count > 1 else ''})_"
         )
+        ids = member_ids[i] if member_ids and i < len(member_ids) else []
+        if ids:
+            mentions = " ".join(f"<@{uid}>" for uid in ids)
+            lines.append(f"  └ {mentions}")
     embed.description = "\n".join(lines)
     return embed
+
+
+async def resolve_leaderboard_players(
+    bot: BotLogsClient, guild: discord.Guild | None, entries: list
+) -> list[list[int]]:
+    """Pour chaque entrée du classement, résout les joueurs de la clé record en
+    IDs de membres Discord présents sur le serveur.
+
+    Deux sources, dans l'ordre : la liaison manuelle (/lier), puis — si
+    l'auto-match est activé — la correspondance du nom de perso normalisé avec
+    les pseudos/surnoms des membres du serveur. Les membres en double (un même
+    membre via plusieurs persos) sont dédupliqués.
+    """
+    links = await asyncio.to_thread(bot.db.all_character_links)
+
+    # Index des pseudos du serveur -> ID (uniquement si l'auto-match est activé
+    # et l'intent « members » disponible, sinon guild.members est vide).
+    member_index: dict[str, int] = {}
+    if bot.config.enable_member_matching and guild is not None:
+        for member in guild.members:
+            for label in (member.nick, getattr(member, "global_name", None), member.name):
+                if label:
+                    member_index.setdefault(logic.normalize_character(label), member.id)
+
+    result: list[list[int]] = []
+    for e in entries:
+        ids: list[int] = []
+        if e.report_code is not None and e.fight_id is not None:
+            players = await asyncio.to_thread(
+                bot.db.get_run_players, e.report_code, e.fight_id
+            )
+            seen: set[int] = set()
+            for name, _cls in players:
+                key = logic.normalize_character(name)
+                uid = links.get(key)
+                if uid is None:
+                    uid = member_index.get(key)
+                if uid is not None and uid not in seen:
+                    seen.add(uid)
+                    ids.append(uid)
+        result.append(ids)
+    return result
 
 
 # --------------------------------------------------------------------------- #
@@ -609,8 +669,83 @@ def register_commands(bot: BotLogsClient) -> None:
                 "Aucune clé timée enregistrée pour l'instant."
             )
             return
+        guild = interaction.guild or bot.get_guild(config.guild_id)
+        member_ids = await resolve_leaderboard_players(bot, guild, entries)
         await interaction.followup.send(
-            embed=build_leaderboard_embed(entries, "🏆 Records Mythique+ par donjon")
+            embed=build_leaderboard_embed(
+                entries, "🏆 Records Mythique+ par donjon", member_ids
+            )
+        )
+
+    @bot.tree.command(
+        name="lier",
+        description="Associe un personnage WoW à ton compte Discord (leaderboard)",
+        guild=guild,
+    )
+    @app_commands.describe(
+        personnage="Nom du personnage WoW (le royaume est ignoré)"
+    )
+    async def lier(interaction: discord.Interaction, personnage: str):
+        key = logic.normalize_character(personnage)
+        if not key:
+            await interaction.response.send_message(
+                "Nom de personnage invalide.", ephemeral=True
+            )
+            return
+        owner = await asyncio.to_thread(bot.db.get_character_link, key)
+        if owner is not None and owner != interaction.user.id:
+            await interaction.response.send_message(
+                f"⚠️ Ce personnage est déjà associé à <@{owner}>. "
+                f"Demande-lui de faire `/delier` s'il s'agit d'une erreur.",
+                ephemeral=True,
+            )
+            return
+        await asyncio.to_thread(bot.db.link_character, key, interaction.user.id)
+        await interaction.response.send_message(
+            f"✅ **{personnage}** est désormais associé à ton compte. "
+            f"Tu apparaîtras sur le `/leaderboard` pour ses clés records.",
+            ephemeral=True,
+        )
+
+    @bot.tree.command(
+        name="delier",
+        description="Supprime l'association d'un de tes personnages WoW",
+        guild=guild,
+    )
+    @app_commands.describe(personnage="Nom du personnage WoW à dissocier")
+    async def delier(interaction: discord.Interaction, personnage: str):
+        key = logic.normalize_character(personnage)
+        removed = await asyncio.to_thread(
+            bot.db.unlink_character, key, interaction.user.id
+        )
+        if removed:
+            await interaction.response.send_message(
+                f"✅ **{personnage}** n'est plus associé à ton compte.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                "Aucune association à ton nom pour ce personnage.", ephemeral=True
+            )
+
+    @bot.tree.command(
+        name="mes-persos",
+        description="Liste les personnages WoW associés à ton compte",
+        guild=guild,
+    )
+    async def mes_persos(interaction: discord.Interaction):
+        keys = await asyncio.to_thread(
+            bot.db.get_links_for_user, interaction.user.id
+        )
+        if not keys:
+            await interaction.response.send_message(
+                "Tu n'as associé aucun personnage. Utilise `/lier <personnage>`.",
+                ephemeral=True,
+            )
+            return
+        listing = "\n".join(f"• {k}" for k in keys)
+        await interaction.response.send_message(
+            f"Tes personnages associés :\n{listing}", ephemeral=True
         )
 
 
@@ -719,7 +854,9 @@ async def _handle_mplus(
         title = titles.get(run.fight_id, f"{run.dungeon_abbr} +{run.level}")
 
         # Données enrichies (best-effort : on dégrade si indisponible).
-        comp = logic.composition_summary(report, _find_fight(report, run.fight_id))
+        fight = _find_fight(report, run.fight_id)
+        comp = logic.composition_summary(report, fight)
+        players = logic.composition_names(report, fight)
         deaths = await bot.wcl.fetch_death_count(run.report_code, run.fight_id)
 
         embed = build_mplus_embed(
@@ -764,6 +901,10 @@ async def _handle_mplus(
             encounter_id=None,
             date=run.date,
             thread_id=thread.id,
+        )
+        # Persiste le roster pour le /leaderboard compétitif (best-effort).
+        await asyncio.to_thread(
+            bot.db.record_run_players, run.report_code, run.fight_id, players
         )
         messages.append(f"✅ Fil créé : {thread.mention}")
 

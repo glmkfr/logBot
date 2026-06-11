@@ -38,7 +38,10 @@ statistiques, et boutons pour ajouter route/VoD a posteriori.
 - **`/stats`** : nombre de clés, % timées, niveau moyen, **meilleure clé timée**,
   répartition par donjon et **tendance hebdomadaire** (mini-graphe 6 semaines).
 - **`/leaderboard`** : meilleure clé Mythique+ **timée par donjon** (niveau record,
-  meilleur temps à ce niveau, nombre de clés timées).
+  meilleur temps à ce niveau, nombre de clés timées). Affiche en plus le **pseudo
+  Discord des joueurs** de la clé record présents sur le serveur (aspect
+  compétitif) : via la liaison manuelle **`/lier`**, et — si `ENABLE_MEMBER_MATCHING`
+  est activé — par correspondance automatique nom de perso ↔ pseudo Discord.
 - **Auto-détection** : coller un lien Warcraft Logs dans un canal configuré
   (`AUTO_DETECT_CHANNEL_IDS`) crée les fils automatiquement, sans taper `/logs`.
 - **Récap hebdomadaire automatique** : poste les stats de la semaine dans un
@@ -112,6 +115,7 @@ Toute la configuration passe par `.env` (jamais de secret en dur). Variables :
 | `RECAP_WEEKDAY` | non | Jour du récap : 0 = lundi … 6 = dimanche (défaut 0) |
 | `RECAP_HOUR` | non | Heure locale du récap, 0–23 (défaut 10) |
 | `AUTO_DETECT_CHANNEL_IDS` | non | IDs de canaux où un lien WCL collé crée les fils sans `/logs` (virgules). Vide = désactivé. **Requiert l'intent privilégié *Message Content*.** |
+| `ENABLE_MEMBER_MATCHING` | non | `1` = auto-match des joueurs du `/leaderboard` avec les pseudos Discord. **Requiert l'intent privilégié *Server Members*.** Défaut `0` (`/lier` fonctionne sans). |
 | `HEARTBEAT_FILE` | non | Fichier de battement de cœur lu par le healthcheck (défaut `data/heartbeat`) |
 | `BACKUP_DIR` | non | Dossier des sauvegardes SQLite quotidiennes (défaut `data/backups`). Vide = désactivé |
 | `BACKUP_KEEP` | non | Nombre de sauvegardes conservées par rotation (défaut 7) |
@@ -132,9 +136,12 @@ Toute la configuration passe par `.env` (jamais de secret en dur). Variables :
 Dans le Developer Portal Discord (https://discord.com/developers/applications) :
 - Onglet **Bot** : créez le bot, copiez le token.
 - **Privileged Intents** : aucun intent privilégié n'est requis par défaut.
-  ⚠️ **Exception** : si vous activez l'auto-détection (`AUTO_DETECT_CHANNEL_IDS`),
-  cochez **Message Content Intent** (onglet *Bot* > *Privileged Gateway Intents*),
-  sinon le bot ne pourra pas lire les liens collés dans le chat.
+  ⚠️ **Exceptions** (onglet *Bot* > *Privileged Gateway Intents*) :
+  - si vous activez l'auto-détection (`AUTO_DETECT_CHANNEL_IDS`), cochez
+    **Message Content Intent**, sinon le bot ne pourra pas lire les liens collés ;
+  - si vous activez l'auto-match du leaderboard (`ENABLE_MEMBER_MATCHING`), cochez
+    **Server Members Intent**, sinon **la connexion du bot échouera**. La liaison
+    manuelle `/lier` fonctionne, elle, sans cet intent.
 - **OAuth2 > URL Generator** : scopes `bot` + `applications.commands`.
 - Permissions du bot dans le canal Forum :
   - *View Channel*, *Send Messages*, *Create Posts* (threads),
@@ -168,7 +175,15 @@ Les slash-commands sont synchronisées sur le `GUILD_ID` au démarrage
   `MIN_KEY_LEVEL` du `.env`). Ex. `niveau_min:15` ⇒ uniquement les +15 et plus.
 - `/stats [periode: semaine|mois|tout]` — statistiques M+ (avec meilleure clé
   timée et, sur la vue globale, la tendance des 6 dernières semaines).
-- `/leaderboard` — meilleure clé timée par donjon (niveau record + meilleur temps).
+- `/leaderboard` — meilleure clé timée par donjon (niveau record + meilleur temps),
+  avec les pseudos Discord des joueurs de la clé record présents sur le serveur.
+- `/lier personnage:<nom>` — associe un personnage WoW à ton compte Discord pour
+  apparaître sur le `/leaderboard` (le royaume est ignoré). `/delier` retire
+  l'association, `/mes-persos` liste tes personnages liés.
+
+> **Backfill** : les clés publiées avant cette feature n'ont pas de roster en
+> base. Pour le récupérer a posteriori (ré-interroge Warcraft Logs, idempotent) :
+> `python scripts/backfill_run_players.py`.
 
 **Auto-détection** : si `AUTO_DETECT_CHANNEL_IDS` est renseigné, coller un lien
 `warcraftlogs.com/reports/...` dans l'un de ces canaux déclenche le même
