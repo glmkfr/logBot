@@ -94,6 +94,13 @@ class Config:
     # Vide = désactivé (et l'intent privilégié message_content n'est pas requis).
     auto_detect_channel_ids: list[int] = field(default_factory=list)
 
+    # Auto-match des joueurs du /leaderboard avec les pseudos Discord.
+    # Nécessite l'intent privilégié « Server Members » (à cocher dans le
+    # Developer Portal). Désactivé par défaut : sans ce réglage côté portail,
+    # activer l'intent ferait planter la connexion. La liaison manuelle /lier
+    # fonctionne, elle, indépendamment de ce réglage.
+    enable_member_matching: bool = False
+
     # Supervision & sauvegarde.
     heartbeat_file: str = "data/heartbeat"  # touché périodiquement (healthcheck)
     backup_dir: str = "data/backups"        # vide = sauvegardes désactivées
@@ -123,6 +130,10 @@ class Config:
             recap_weekday=min(max(_optional_int("RECAP_WEEKDAY", 0) or 0, 0), 6),
             recap_hour=min(max(_optional_int("RECAP_HOUR", 10) or 10, 0), 23),
             auto_detect_channel_ids=_id_list("AUTO_DETECT_CHANNEL_IDS"),
+            enable_member_matching=os.environ.get(
+                "ENABLE_MEMBER_MATCHING", "0"
+            ).strip()
+            in {"1", "true", "True"},
             heartbeat_file=os.environ.get("HEARTBEAT_FILE", "data/heartbeat").strip()
             or "data/heartbeat",
             backup_dir=os.environ.get("BACKUP_DIR", "data/backups").strip(),

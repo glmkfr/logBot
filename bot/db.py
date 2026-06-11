@@ -51,6 +51,24 @@ CREATE TABLE IF NOT EXISTS thread_links (
     updated_at TEXT    NOT NULL,
     PRIMARY KEY (thread_id, kind)
 );
+
+-- Roster d'un run : un personnage WoW par ligne (pour le /leaderboard
+-- compétitif). character_name est le nom brut renvoyé par Warcraft Logs.
+CREATE TABLE IF NOT EXISTS run_players (
+    report_code    TEXT    NOT NULL,
+    fight_id       INTEGER NOT NULL,
+    character_name TEXT    NOT NULL,
+    class          TEXT,
+    PRIMARY KEY (report_code, fight_id, character_name)
+);
+
+-- Association manuelle perso WoW -> membre Discord (commande /lier).
+-- character_key = nom de perso normalisé (sans royaume, sans accents, minuscule).
+CREATE TABLE IF NOT EXISTS member_links (
+    character_key   TEXT    PRIMARY KEY,
+    discord_user_id INTEGER NOT NULL,
+    added_at        TEXT    NOT NULL
+);
 """
 
 
@@ -77,6 +95,10 @@ class LeaderboardEntry:
     best_level: int
     best_time_ms: int | None  # meilleur temps au niveau record (None si absent)
     timed_count: int          # nombre total de clés timées sur ce donjon
+    # Run précis qui détient le record (pour retrouver son roster). None si
+    # indéterminable (ne devrait pas arriver pour une entrée présente).
+    report_code: str | None = None
+    fight_id: int | None = None
 
 
 class Database:
@@ -156,6 +178,108 @@ class Database:
                 return True
             except sqlite3.IntegrityError:
                 return False
+
+    # -- Roster d'un run ------------------------------------------------------
+
+    def record_run_players(
+        self, report_code: str, fight_id: int, players: list[tuple[str, str | None]]
+    ) -> None:
+        """Enregistre le roster d'un run (best-effort, idempotent).
+
+        `players` est une liste de (nom_du_perso, classe). Les doublons et les
+        ré-enregistrements sont ignorés silencieusement (INSERT OR IGNORE).
+        """
+        if not players:
+            return
+        with self._lock:
+            self._conn.executemany(
+                "INSERT OR IGNORE INTO run_players "
+                "(report_code, fight_id, character_name, class) VALUES (?, ?, ?, ?)",
+                [(report_code, fight_id, name, cls) for name, cls in players if name],
+            )
+            self._conn.commit()
+
+    def runs_without_roster(self) -> list[tuple[str, int]]:
+        """Runs M+ sans roster enregistré (pour le backfill). (report_code, fight_id)."""
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT r.report_code, r.fight_id FROM runs r
+                WHERE r.kind = 'mplus'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM run_players p
+                      WHERE p.report_code = r.report_code
+                        AND p.fight_id = r.fight_id
+                  )
+                ORDER BY r.report_code, r.fight_id
+                """
+            )
+            return [(row["report_code"], row["fight_id"]) for row in cur.fetchall()]
+
+    def get_run_players(
+        self, report_code: str, fight_id: int
+    ) -> list[tuple[str, str | None]]:
+        """Retourne le roster (nom, classe) enregistré pour un run."""
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT character_name, class FROM run_players "
+                "WHERE report_code = ? AND fight_id = ? ORDER BY character_name",
+                (report_code, fight_id),
+            )
+            return [(r["character_name"], r["class"]) for r in cur.fetchall()]
+
+    # -- Liaison perso WoW <-> membre Discord ---------------------------------
+
+    def link_character(self, character_key: str, discord_user_id: int) -> None:
+        """Associe un perso (clé normalisée) à un membre Discord (upsert)."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO member_links (character_key, discord_user_id, added_at) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(character_key) DO UPDATE SET "
+                "discord_user_id = excluded.discord_user_id, added_at = excluded.added_at",
+                (character_key, discord_user_id, self._now()),
+            )
+            self._conn.commit()
+
+    def unlink_character(self, character_key: str, discord_user_id: int) -> bool:
+        """Supprime un lien si (et seulement si) il appartient à ce membre."""
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM member_links "
+                "WHERE character_key = ? AND discord_user_id = ?",
+                (character_key, discord_user_id),
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def get_character_link(self, character_key: str) -> int | None:
+        """Retourne l'ID Discord lié à un perso, ou None."""
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT discord_user_id FROM member_links WHERE character_key = ?",
+                (character_key,),
+            )
+            row = cur.fetchone()
+            return row["discord_user_id"] if row else None
+
+    def all_character_links(self) -> dict[str, int]:
+        """Retourne tout le mapping {clé_perso: discord_user_id}."""
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT character_key, discord_user_id FROM member_links"
+            )
+            return {r["character_key"]: r["discord_user_id"] for r in cur.fetchall()}
+
+    def get_links_for_user(self, discord_user_id: int) -> list[str]:
+        """Retourne les clés de perso liées à un membre."""
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT character_key FROM member_links "
+                "WHERE discord_user_id = ? ORDER BY character_key",
+                (discord_user_id,),
+            )
+            return [r["character_key"] for r in cur.fetchall()]
 
     # -- Fils de raid ---------------------------------------------------------
 
@@ -279,15 +403,32 @@ class Database:
         """
         with self._lock:
             cur = self._conn.execute(query)
-            return [
-                LeaderboardEntry(
-                    dungeon=row["dungeon"] or "?",
-                    best_level=row["best_level"],
-                    best_time_ms=row["best_time"],
-                    timed_count=row["timed_count"],
+            rows = cur.fetchall()
+            entries: list[LeaderboardEntry] = []
+            for row in rows:
+                # Identifie le run précis qui détient le record (niveau record,
+                # puis temps le plus court) pour pouvoir retrouver son roster.
+                record = self._conn.execute(
+                    """
+                    SELECT report_code, fight_id FROM runs
+                    WHERE kind = 'mplus' AND timed = 1
+                      AND dungeon IS ? AND level = ?
+                    ORDER BY keystone_time IS NULL, keystone_time ASC
+                    LIMIT 1
+                    """,
+                    (row["dungeon"], row["best_level"]),
+                ).fetchone()
+                entries.append(
+                    LeaderboardEntry(
+                        dungeon=row["dungeon"] or "?",
+                        best_level=row["best_level"],
+                        best_time_ms=row["best_time"],
+                        timed_count=row["timed_count"],
+                        report_code=record["report_code"] if record else None,
+                        fight_id=record["fight_id"] if record else None,
+                    )
                 )
-                for row in cur.fetchall()
-            ]
+            return entries
 
     def weekly_counts(self, weeks: int = 6) -> list[tuple[str, int]]:
         """Nombre de clés M+ par semaine ISO, des plus anciennes aux récentes.

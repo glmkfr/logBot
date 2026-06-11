@@ -8,6 +8,7 @@ champ manque, on dégrade proprement plutôt que de crasher.
 from __future__ import annotations
 
 import datetime
+import unicodedata
 from dataclasses import dataclass, field
 
 # --- Abréviations des donjons / instances ---
@@ -124,6 +125,34 @@ def composition(report: dict, fight: dict) -> list[str]:
         if actor and actor.get("subType"):
             classes.append(actor["subType"])
     return classes
+
+
+def composition_names(report: dict, fight: dict) -> list[tuple[str, str | None]]:
+    """Liste (nom du personnage, classe) des joueurs présents sur un combat.
+
+    Retourne une liste vide si l'info n'est pas exploitable (dégradation propre).
+    Utilisé pour persister le roster d'un run (cf. /leaderboard compétitif).
+    """
+    actors = _actors_by_id(report)
+    player_ids = fight.get("friendlyPlayers") or []
+    players: list[tuple[str, str | None]] = []
+    for pid in player_ids:
+        actor = actors.get(pid)
+        if actor and actor.get("name"):
+            players.append((actor["name"], actor.get("subType")))
+    return players
+
+
+def normalize_character(name: str) -> str:
+    """Clé de comparaison d'un nom de perso : sans royaume, sans accents, minuscule.
+
+    Warcraft Logs renvoie parfois « Nom-Royaume » ; on ne garde que le nom et on
+    retire les diacritiques pour permettre l'association manuelle et l'auto-match
+    avec les pseudos Discord malgré les variations d'écriture.
+    """
+    base = (name or "").split("-", 1)[0].strip().lower()
+    decomposed = unicodedata.normalize("NFKD", base)
+    return "".join(c for c in decomposed if not unicodedata.combining(c))
 
 
 def composition_summary(report: dict, fight: dict) -> str | None:

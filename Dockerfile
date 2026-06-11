@@ -13,6 +13,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Code applicatif.
 COPY bot/ ./bot/
+COPY scripts/ ./scripts/
 COPY bot_logs.py .
 
 # Utilisateur non-root + dossiers de données/logs accessibles.

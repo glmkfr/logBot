@@ -109,6 +109,50 @@ def test_leaderboard(tmp_path):
     assert by_dungeon["Pit of Saron"].best_level == 16
     # Tri : Skyreach (+22) avant Pit of Saron (+16).
     assert board[0].dungeon == "Skyreach"
+    # Le run record pointé est bien celui du temps le plus court (+22, fight 2).
+    assert by_dungeon["Skyreach"].report_code == "A"
+    assert by_dungeon["Skyreach"].fight_id == 2
+    db.close()
+
+
+def test_run_players_roster(tmp_path):
+    db = _db(tmp_path)
+    assert db.get_run_players("A", 1) == []
+    db.record_run_players("A", 1, [("Alice-Hyjal", "Mage"), ("Bob", "Priest")])
+    # Idempotent : un ré-enregistrement (doublon) ne crée pas de lignes en plus.
+    db.record_run_players("A", 1, [("Alice-Hyjal", "Mage")])
+    roster = db.get_run_players("A", 1)
+    assert roster == [("Alice-Hyjal", "Mage"), ("Bob", "Priest")]
+    db.close()
+
+
+def test_runs_without_roster(tmp_path):
+    db = _db(tmp_path)
+    _record(db, code="A", fight=1, dungeon="Skyreach", level=20, timed=True)
+    _record(db, code="A", fight=2, dungeon="Skyreach", level=18, timed=True)
+    # Au départ, aucun roster : les deux runs sont à backfiller.
+    assert db.runs_without_roster() == [("A", 1), ("A", 2)]
+    # Une fois le roster du fight 1 renseigné, seul le fight 2 reste.
+    db.record_run_players("A", 1, [("Alice", "Mage")])
+    assert db.runs_without_roster() == [("A", 2)]
+    db.close()
+
+
+def test_member_links(tmp_path):
+    db = _db(tmp_path)
+    assert db.get_character_link("alice") is None
+    db.link_character("alice", 111)
+    db.link_character("bob", 111)
+    assert db.get_character_link("alice") == 111
+    assert sorted(db.get_links_for_user(111)) == ["alice", "bob"]
+    assert db.all_character_links() == {"alice": 111, "bob": 111}
+    # Upsert : ré-attribution à un autre membre.
+    db.link_character("alice", 222)
+    assert db.get_character_link("alice") == 222
+    # Suppression réservée au propriétaire.
+    assert db.unlink_character("alice", 111) is False  # pas le bon membre
+    assert db.unlink_character("alice", 222) is True
+    assert db.get_character_link("alice") is None
     db.close()
 
 

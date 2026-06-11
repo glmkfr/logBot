@@ -135,6 +135,23 @@ def test_composition_summary_counts_classes():
     assert "Priest" in summary
 
 
+def test_composition_names_returns_characters():
+    report = _report()
+    fight = report["fights"][0]
+    names = logic.composition_names(report, fight)
+    assert names == [("Aaa", "Mage"), ("Bbb", "Mage"), ("Ccc", "Priest")]
+
+
+def test_composition_names_empty_degrades_cleanly():
+    assert logic.composition_names({}, {}) == []
+
+
+def test_normalize_character_strips_realm_and_accents():
+    assert logic.normalize_character("Bûcheronx-Hyjal") == "bucheronx"
+    assert logic.normalize_character("  Aaa  ") == "aaa"
+    assert logic.normalize_character("") == ""
+
+
 def test_affix_label_known_and_unknown():
     assert logic.affix_label(10) == "Fortifié"
     assert logic.affix_label(999999) == "Affixe #999999"
