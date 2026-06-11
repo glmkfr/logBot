@@ -800,6 +800,31 @@ async def resolve_season_window(
     return since, until, season.name
 
 
+def linkable_character_autocomplete(bot: BotLogsClient):
+    """Autocomplétion de /lier : persos vus dans les rosters et pas encore liés."""
+
+    async def autocomplete(
+        interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        names = await asyncio.to_thread(bot.db.distinct_character_names)
+        linked = await asyncio.to_thread(bot.db.all_character_links)
+        needle = logic.normalize_character(current)
+        choices: list[app_commands.Choice[str]] = []
+        seen: set[str] = set()
+        for name in names:
+            key = logic.normalize_character(name)
+            if key in linked or key in seen:
+                continue  # déjà associé à quelqu'un, ou doublon (royaume/casse)
+            if needle in key:
+                seen.add(key)
+                choices.append(app_commands.Choice(name=name, value=name))
+                if len(choices) >= 25:
+                    break
+        return choices
+
+    return autocomplete
+
+
 def season_autocomplete(bot: BotLogsClient):
     """Autocomplétion du paramètre `saison` : « tout » + les saisons connues."""
 
@@ -949,6 +974,7 @@ def register_commands(bot: BotLogsClient) -> None:
     @app_commands.describe(
         personnage="Nom du personnage WoW (le royaume est ignoré)"
     )
+    @app_commands.autocomplete(personnage=linkable_character_autocomplete(bot))
     async def lier(interaction: discord.Interaction, personnage: str):
         key = logic.normalize_character(personnage)
         if not key:

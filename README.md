@@ -205,8 +205,9 @@ Les slash-commands sont synchronisées sur le `GUILD_ID` au démarrage
   — gestion des saisons, **réservées aux rôles `ADMIN_ROLE_IDS`** (ou perm. *Gérer le
   serveur* si non configuré).
 - `/lier personnage:<nom>` — associe un personnage WoW à ton compte Discord pour
-  apparaître dans les classements et les fils (le royaume est ignoré). `/delier`
-  retire l'association, `/mes-persos` liste tes personnages liés.
+  apparaître dans les classements et les fils (le royaume est ignoré ; **autocomplétion**
+  des persos déjà vus et pas encore liés). `/delier` retire l'association, `/mes-persos`
+  liste tes personnages liés.
 - `/aide` — récapitulatif du fonctionnement du bot et de ses commandes.
 
 > **Backfill** : les clés publiées avant cette feature n'ont pas de roster en
