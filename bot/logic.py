@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import datetime
 import unicodedata
+from collections import defaultdict
 from dataclasses import dataclass, field
+from typing import Mapping, Sequence
 
 # --- Abréviations des donjons / instances ---
 # Clé : nom complet (en minuscules), Valeur : abréviation à afficher.
@@ -168,6 +170,157 @@ def composition_summary(report: dict, fight: dict) -> str | None:
         for name, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
     ]
     return ", ".join(parts)
+
+
+# --------------------------------------------------------------------------- #
+# Statistiques par joueur (classement / profil)
+# --------------------------------------------------------------------------- #
+#
+# Ces fonctions sont *pures* : elles agrègent des lignes (joueur × run) déjà
+# extraites de la base et un « resolver » {nom_normalisé -> id Discord} construit
+# par la couche Discord (liens manuels + auto-match). Elles ne connaissent ni la
+# base ni Discord, ce qui les rend faciles à tester.
+#
+# Une « ligne » est un mapping exposant les clés : report_code, fight_id,
+# character_name, dungeon, level, timed, keystone_time (cf. db.player_run_rows).
+
+
+@dataclass
+class PlayerRanking:
+    """Une entrée du classement des joueurs (meilleures clés timées)."""
+
+    user_id: int
+    best_level: int
+    best_dungeon: str
+    best_time_ms: int | None
+    timed_count: int
+    avg_level: float
+
+
+@dataclass
+class PlayerProfile:
+    """Statistiques individuelles d'un joueur (commande /profil)."""
+
+    user_id: int
+    total: int                              # runs auxquels il a participé
+    timed: int                              # dont timés
+    avg_level: float
+    best_by_dungeon: list[tuple[str, int, int | None]]  # (donjon, niveau, temps)
+    partners: list[tuple[int, int]]         # (id Discord du partenaire, nb de runs)
+
+    @property
+    def timed_pct(self) -> float:
+        return (self.timed / self.total * 100.0) if self.total else 0.0
+
+
+def _resolve(resolver: Mapping[str, int], name: str) -> int | None:
+    return resolver.get(normalize_character(name))
+
+
+def player_rankings(
+    rows: Sequence[Mapping], resolver: Mapping[str, int]
+) -> list[PlayerRanking]:
+    """Classement des joueurs par meilleure clé timée, puis nombre de clés.
+
+    Seuls les runs timés et les personnages résolus en membre Discord comptent.
+    """
+    by_user: dict[int, list[tuple[int, int | None, str]]] = defaultdict(list)
+    for row in rows:
+        if not row["timed"]:
+            continue
+        uid = _resolve(resolver, row["character_name"])
+        if uid is None:
+            continue
+        by_user[uid].append((row["level"], row["keystone_time"], row["dungeon"] or "?"))
+
+    rankings: list[PlayerRanking] = []
+    for uid, runs in by_user.items():
+        levels = [lvl for lvl, _, _ in runs]
+        best_level = max(levels)
+        at_best = [(t, d) for lvl, t, d in runs if lvl == best_level]
+        # Au niveau record : le temps le plus court (None = inconnu, classé après).
+        best_time, best_dungeon = min(
+            at_best, key=lambda td: (td[0] is None, td[0] or 0)
+        )
+        rankings.append(
+            PlayerRanking(
+                user_id=uid,
+                best_level=best_level,
+                best_dungeon=best_dungeon,
+                best_time_ms=best_time,
+                timed_count=len(runs),
+                avg_level=sum(levels) / len(levels),
+            )
+        )
+
+    rankings.sort(
+        key=lambda r: (
+            -r.best_level,
+            -r.timed_count,
+            r.best_time_ms is None,
+            r.best_time_ms or 0,
+        )
+    )
+    return rankings
+
+
+def player_profile(
+    rows: Sequence[Mapping], resolver: Mapping[str, int], user_id: int
+) -> PlayerProfile:
+    """Statistiques d'un joueur donné : clés, meilleure par donjon, partenaires."""
+    target_keys = {key for key, uid in resolver.items() if uid == user_id}
+
+    # Indexe les participants par run (pour les partenaires) et isole les runs
+    # du joueur cible (un run compté une seule fois même avec plusieurs persos).
+    members_by_run: dict[tuple, list[int]] = defaultdict(list)
+    target_runs: dict[tuple, Mapping] = {}
+    for row in rows:
+        run = (row["report_code"], row["fight_id"])
+        uid = _resolve(resolver, row["character_name"])
+        if uid is not None:
+            members_by_run[run].append(uid)
+        if normalize_character(row["character_name"]) in target_keys:
+            target_runs[run] = row
+
+    runs = list(target_runs.values())
+    total = len(runs)
+    timed_runs = [r for r in runs if r["timed"]]
+    levels = [r["level"] for r in runs]
+    avg_level = sum(levels) / len(levels) if levels else 0.0
+
+    # Meilleure clé timée par donjon (niveau le plus haut, puis temps le plus court).
+    best: dict[str, tuple[int, int | None]] = {}
+    for r in timed_runs:
+        dungeon = r["dungeon"] or "?"
+        level, time_ms = r["level"], r["keystone_time"]
+        current = best.get(dungeon)
+        better = current is None or level > current[0] or (
+            level == current[0]
+            and (time_ms or float("inf")) < (current[1] or float("inf"))
+        )
+        if better:
+            best[dungeon] = (level, time_ms)
+    best_by_dungeon = sorted(
+        ((d, lvl, t) for d, (lvl, t) in best.items()),
+        key=lambda x: (-x[1], x[2] is None, x[2] or 0),
+    )
+
+    # Partenaires : co-équipiers (résolus) sur les runs du joueur.
+    partner_counts: dict[int, int] = defaultdict(int)
+    for run in target_runs:
+        for uid in members_by_run[run]:
+            if uid != user_id:
+                partner_counts[uid] += 1
+    partners = sorted(partner_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:5]
+
+    return PlayerProfile(
+        user_id=user_id,
+        total=total,
+        timed=len(timed_runs),
+        avg_level=avg_level,
+        best_by_dungeon=best_by_dungeon,
+        partners=partners,
+    )
 
 
 # --------------------------------------------------------------------------- #
