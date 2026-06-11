@@ -191,6 +191,24 @@ def current_season(seasons: Sequence, today: str):
     return started[-1] if started else None
 
 
+def beats_record(
+    prev: tuple[int, int | None] | None, level: int, time_ms: int | None
+) -> bool:
+    """Un run timé (level, time_ms) améliore-t-il le record `prev` (level, temps) ?
+
+    `prev` None signifie « aucun record précédent » → tout run timé en est un.
+    Sinon : niveau strictement supérieur, ou même niveau et temps plus court.
+    """
+    if prev is None:
+        return True
+    prev_level, prev_time = prev
+    if level > prev_level:
+        return True
+    if level == prev_level and time_ms is not None:
+        return prev_time is None or time_ms < prev_time
+    return False
+
+
 def season_bounds(seasons: Sequence, season) -> tuple[str, str | None]:
     """Bornes (since, until) d'une saison : de son début au début de la suivante.
 
