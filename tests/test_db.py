@@ -235,6 +235,16 @@ def test_member_links(tmp_path):
     db.close()
 
 
+def test_remove_link_admin(tmp_path):
+    db = _db(tmp_path)
+    assert db.remove_link("alice") is None  # rien à retirer
+    db.link_character("alice", 111)
+    # Suppression admin : retourne l'ancien propriétaire, quel qu'il soit.
+    assert db.remove_link("alice") == 111
+    assert db.get_character_link("alice") is None
+    db.close()
+
+
 def test_weekly_counts_length_and_recent(tmp_path):
     db = _db(tmp_path)
     _record(db, code="A", fight=1, dungeon="Skyreach", level=20, timed=True)
