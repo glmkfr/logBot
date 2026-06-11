@@ -208,6 +208,9 @@ Les slash-commands sont synchronisées sur le `GUILD_ID` au démarrage
   apparaître dans les classements et les fils (le royaume est ignoré ; **autocomplétion**
   des persos déjà vus et pas encore liés). `/delier` retire l'association, `/mes-persos`
   liste tes personnages liés.
+- `/lier-admin membre personnage` et `/delier-admin personnage` — gestion des
+  associations **pour n'importe quel membre**, **réservées aux rôles `ADMIN_ROLE_IDS`**
+  (ou perm. *Gérer le serveur* si non configuré).
 - `/aide` — récapitulatif du fonctionnement du bot et de ses commandes.
 
 > **Backfill** : les clés publiées avant cette feature n'ont pas de roster en

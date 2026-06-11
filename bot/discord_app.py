@@ -658,7 +658,8 @@ def build_help_embed() -> discord.Embed:
         name="🔗 Apparaître dans les classements",
         value=(
             "• `/lier <personnage>` — associe un perso WoW à ton compte Discord.\n"
-            "• `/delier <personnage>` · `/mes-persos` — gère tes associations."
+            "• `/delier <personnage>` · `/mes-persos` — gère tes associations.\n"
+            "• `/lier-admin` · `/delier-admin` — (responsables) gèrent les liens des autres."
         ),
         inline=False,
     )
@@ -1037,6 +1038,70 @@ def register_commands(bot: BotLogsClient) -> None:
         await interaction.response.send_message(
             f"Tes personnages associés :\n{listing}", ephemeral=True
         )
+
+    @bot.tree.command(
+        name="lier-admin",
+        description="(Responsables) Associe un personnage WoW à un membre",
+        guild=guild,
+    )
+    @app_commands.describe(
+        membre="Le membre à qui associer le personnage",
+        personnage="Nom du personnage WoW (le royaume est ignoré)",
+    )
+    @app_commands.autocomplete(personnage=linkable_character_autocomplete(bot))
+    @admin_check
+    async def lier_admin(
+        interaction: discord.Interaction, membre: discord.Member, personnage: str
+    ):
+        key = logic.normalize_character(personnage)
+        if not key:
+            await interaction.response.send_message(
+                "Nom de personnage invalide.", ephemeral=True
+            )
+            return
+        previous = await asyncio.to_thread(bot.db.get_character_link, key)
+        await asyncio.to_thread(bot.db.link_character, key, membre.id)
+        if previous is not None and previous != membre.id:
+            msg = (
+                f"✅ **{personnage}** réassigné à {membre.mention} "
+                f"(était lié à <@{previous}>)."
+            )
+        else:
+            msg = f"✅ **{personnage}** associé à {membre.mention}."
+        await interaction.response.send_message(msg, ephemeral=True)
+
+    @bot.tree.command(
+        name="delier-admin",
+        description="(Responsables) Dissocie un personnage WoW (de n'importe qui)",
+        guild=guild,
+    )
+    @app_commands.describe(personnage="Nom du personnage WoW à dissocier")
+    @admin_check
+    async def delier_admin(interaction: discord.Interaction, personnage: str):
+        key = logic.normalize_character(personnage)
+        previous = await asyncio.to_thread(bot.db.remove_link, key)
+        if previous is None:
+            await interaction.response.send_message(
+                "Aucune association pour ce personnage.", ephemeral=True
+            )
+            return
+        await interaction.response.send_message(
+            f"🗑️ **{personnage}** dissocié de <@{previous}>.", ephemeral=True
+        )
+
+    @lier_admin.error
+    @delier_admin.error
+    async def _link_admin_error(
+        interaction: discord.Interaction, error: Exception
+    ):
+        if isinstance(error, app_commands.CheckFailure):
+            msg = "⛔ Commande réservée aux responsables."
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        else:
+            await bot.report_error("Commande lier-admin", error)
 
     @bot.tree.command(
         name="classement-joueurs",

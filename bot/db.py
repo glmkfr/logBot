@@ -312,6 +312,24 @@ class Database:
             self._conn.commit()
             return cur.rowcount > 0
 
+    def remove_link(self, character_key: str) -> int | None:
+        """Supprime un lien quel que soit son propriétaire (admin).
+
+        Retourne l'ID du membre auquel il était associé, ou None s'il n'existait pas.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT discord_user_id FROM member_links WHERE character_key = ?",
+                (character_key,),
+            ).fetchone()
+            if row is None:
+                return None
+            self._conn.execute(
+                "DELETE FROM member_links WHERE character_key = ?", (character_key,)
+            )
+            self._conn.commit()
+            return row["discord_user_id"]
+
     def get_character_link(self, character_key: str) -> int | None:
         """Retourne l'ID Discord lié à un perso, ou None."""
         with self._lock:
