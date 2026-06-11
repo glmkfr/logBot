@@ -621,6 +621,30 @@ def build_versus_embed(
     return embed
 
 
+def build_raid_progress_embed(zone: str, rows: list) -> discord.Embed:
+    """Embed de progression d'un raid (boss tués / essais en cours)."""
+    killed = sum(1 for r in rows if r["killed"])
+    total = len(rows)
+    embed = discord.Embed(
+        title=f"⚔️ Progression — {logic.abbreviate(zone)}",
+        description=f"**{killed}/{total}** boss tué{'s' if killed > 1 else ''}",
+        color=discord.Color.dark_red(),
+    )
+    lines = []
+    for r in rows:
+        pulls = r["total_pulls"]
+        pulls_str = f"{pulls} pull{'s' if pulls > 1 else ''}"
+        if r["killed"]:
+            lines.append(f"✅ **{r['name']}** _({pulls_str})_")
+        else:
+            pct = r["best_percentage"]
+            best = f" — best **{pct:.0f} %**" if pct is not None else ""
+            lines.append(f"💀 **{r['name']}**{best} _({pulls_str})_")
+    if lines:
+        embed.add_field(name="Boss", value="\n".join(lines)[:1024], inline=False)
+    return embed
+
+
 def build_help_embed() -> discord.Embed:
     """Embed d'aide : présentation du bot et de ses commandes."""
     embed = discord.Embed(
@@ -650,6 +674,7 @@ def build_help_embed() -> discord.Embed:
             "• `/classement-joueurs [saison]` — meilleurs **joueurs** par clés timées.\n"
             "• `/profil [membre] [saison]` — stats d'un joueur (clés, partenaires…).\n"
             "• `/versus joueur1 joueur2 [saison]` — compare deux joueurs.\n"
+            "• `/progression-raid [zone]` — progression de la guilde sur un raid.\n"
             "• `/saisons` — saisons enregistrées (par défaut : la saison en cours)."
         ),
         inline=False,
@@ -822,6 +847,22 @@ def linkable_character_autocomplete(bot: BotLogsClient):
                 if len(choices) >= 25:
                     break
         return choices
+
+    return autocomplete
+
+
+def raid_zone_autocomplete(bot: BotLogsClient):
+    """Autocomplétion du paramètre `zone` : les raids suivis (plus récents d'abord)."""
+
+    async def autocomplete(
+        interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        zones = await asyncio.to_thread(bot.db.raid_zones)
+        return [
+            app_commands.Choice(name=z, value=z)
+            for z in zones
+            if current.lower() in z.lower()
+        ][:25]
 
     return autocomplete
 
@@ -1206,6 +1247,30 @@ def register_commands(bot: BotLogsClient) -> None:
         )
 
     @bot.tree.command(
+        name="progression-raid",
+        description="Progression de la guilde sur un raid (boss tués / essais)",
+        guild=guild,
+    )
+    @app_commands.describe(zone="Le raid à afficher (défaut : le plus récent)")
+    @app_commands.autocomplete(zone=raid_zone_autocomplete(bot))
+    async def progression_raid(
+        interaction: discord.Interaction, zone: str | None = None
+    ):
+        await interaction.response.defer()
+        zones = await asyncio.to_thread(bot.db.raid_zones)
+        if not zones:
+            await interaction.followup.send(
+                "Aucune donnée de raid pour l'instant. Publie un rapport de raid "
+                "avec `/logs`."
+            )
+            return
+        target = zone if zone in zones else zones[0]
+        rows = await asyncio.to_thread(bot.db.raid_progress, target)
+        await interaction.followup.send(
+            embed=build_raid_progress_embed(target, rows)
+        )
+
+    @bot.tree.command(
         name="aide",
         description="Comment fonctionne le bot et la liste des commandes",
         guild=guild,
@@ -1576,6 +1641,15 @@ async def _handle_raid(
     thread = created.thread
 
     await asyncio.to_thread(bot.db.record_raid_thread, code, zone, thread.id)
+    # Met à jour la progression cumulée de la zone (best-effort).
+    await asyncio.to_thread(
+        bot.db.update_raid_progress,
+        zone,
+        [
+            (e.encounter_id, e.name, e.killed, e.pulls, e.best_percentage)
+            for e in encounters
+        ],
+    )
     messages.append(f"✅ Fil de raid créé : {thread.mention}")
 
 

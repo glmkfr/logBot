@@ -32,7 +32,8 @@ statistiques, et boutons pour ajouter route/VoD a posteriori.
 - **Liens profonds** : vers le combat précis sur Warcraft Logs et vers
   WoWAnalyzer (rapport + combat ; sélection du joueur laissée à l'utilisateur).
 - **Raid** : un lien WoWAnalyzer par boss, basé sur le pull représentatif
-  (le kill, sinon le meilleur essai). Pas de mapping perso↔Discord.
+  (le kill, sinon le meilleur essai). **Progression cumulée** par boss/zone
+  consultable via `/progression-raid` (boss tués, meilleur essai, pulls).
 - **Paramètres `route:` / `vod:`** sur `/logs`, et **boutons** qui **éditent
   l'embed** du fil pour y afficher la route / la VoD (persistées en base).
 - **`/stats`** : nombre de clés, % timées, niveau moyen, **meilleure clé timée**,
@@ -198,6 +199,8 @@ Les slash-commands sont synchronisées sur le `GUILD_ID` au démarrage
   meilleure clé par donjon et partenaires fréquents (par défaut : toi).
 - `/versus joueur1 joueur2 [saison]` — compare deux joueurs côte à côte (clés, % timées,
   niveau moyen, meilleure clé, clés jouées ensemble).
+- `/progression-raid [zone]` — progression de la guilde sur un raid (boss tués, meilleur
+  essai et nombre de pulls cumulés par boss).
 - `/saisons` — liste les saisons M+. Les classements ci-dessus portent par défaut sur
   la **saison en cours** ; le paramètre `saison` permet d'en choisir une autre ou
   `Tout l'historique`.
