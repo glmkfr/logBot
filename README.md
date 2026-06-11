@@ -51,6 +51,9 @@ statistiques, et boutons pour ajouter route/VoD a posteriori.
   portent par défaut sur la **saison en cours**, avec option pour une autre saison ou
   tout l'historique. Gestion via **`/nouvelle-saison`** / **`/supprimer-saison`**
   (réservées aux rôles `ADMIN_ROLE_IDS`).
+- **Annonce des records** : quand une clé devient le nouveau record d'un donjon (pour
+  la saison en cours), le bot l'annonce dans le canal `RECORDS_CHANNEL_ID` avec les
+  joueurs concernés.
 - **`/aide`** : récapitulatif du bot et de ses commandes, directement sur Discord.
 - **Auto-détection** : coller un lien Warcraft Logs dans un canal configuré
   (`AUTO_DETECT_CHANNEL_IDS`) crée les fils automatiquement, sans taper `/logs`.
@@ -122,6 +125,7 @@ Toute la configuration passe par `.env` (jamais de secret en dur). Variables :
 | `LOG_CHANNEL_ID` | non | Canal Discord où relayer les erreurs |
 | `LOG_FILE` | non | Fichier de log (défaut `logs/bot.log`) |
 | `WOWANALYZER_RAID_LINKS` | non | `1` = poster les liens WoWAnalyzer pour les raids |
+| `RECORDS_CHANNEL_ID` | non | Canal où annoncer les nouveaux records de donjon (saison en cours). Vide = désactivé |
 | `RECAP_CHANNEL_ID` | non | Canal du récap hebdomadaire. Vide = récap désactivé |
 | `RECAP_WEEKDAY` | non | Jour du récap : 0 = lundi … 6 = dimanche (défaut 0) |
 | `RECAP_HOUR` | non | Heure locale du récap, 0–23 (défaut 10) |

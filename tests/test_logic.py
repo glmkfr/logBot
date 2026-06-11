@@ -215,6 +215,17 @@ def test_current_season_and_bounds():
     assert logic.season_bounds(seasons, seasons[2]) == ("2026-09-01", None)
 
 
+def test_beats_record():
+    assert logic.beats_record(None, 18, 1000) is True          # premier record
+    assert logic.beats_record((20, 800), 22, 900) is True       # niveau supérieur
+    assert logic.beats_record((20, 800), 18, 100) is False      # niveau inférieur
+    assert logic.beats_record((20, 800), 20, 700) is True       # = niveau, plus rapide
+    assert logic.beats_record((20, 800), 20, 900) is False      # = niveau, plus lent
+    assert logic.beats_record((20, 800), 20, 800) is False      # = niveau, = temps
+    assert logic.beats_record((20, None), 20, 700) is True      # record précédent sans temps
+    assert logic.beats_record((20, 800), 20, None) is False     # run sans temps connu
+
+
 def test_affix_label_known_and_unknown():
     assert logic.affix_label(10) == "Fortifié"
     assert logic.affix_label(999999) == "Affixe #999999"

@@ -175,6 +175,20 @@ def test_player_run_rows_window(tmp_path):
     db.close()
 
 
+def test_dungeon_record(tmp_path):
+    db = _db(tmp_path)
+    assert db.dungeon_record("Skyreach") is None
+    _record(db, code="A", fight=1, dungeon="Skyreach", level=18, timed=True, time_ms=900_000)
+    _record(db, code="A", fight=2, dungeon="Skyreach", level=20, timed=True, time_ms=800_000)
+    _record(db, code="A", fight=3, dungeon="Skyreach", level=20, timed=True, time_ms=700_000)
+    _record(db, code="A", fight=4, dungeon="Skyreach", level=24, timed=False)  # non timé
+    # Niveau record 20, meilleur temps 700k (la +24 non timée ne compte pas).
+    assert db.dungeon_record("Skyreach") == (20, 700_000)
+    # Hors fenêtre temporelle -> aucun record.
+    assert db.dungeon_record("Skyreach", since_iso="2999-01-01") is None
+    db.close()
+
+
 def test_seasons_crud(tmp_path):
     db = _db(tmp_path)
     assert db.list_seasons() == []

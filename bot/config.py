@@ -89,6 +89,9 @@ class Config:
     log_file: str | None = "logs/bot.log"
     wowanalyzer_raid_links: bool = True
 
+    # Annonce automatique des nouveaux records de donjon (désactivé si None).
+    records_channel_id: int | None = None
+
     # Récap hebdomadaire automatique (désactivé si recap_channel_id est None).
     recap_channel_id: int | None = None
     recap_weekday: int = 0  # 0 = lundi … 6 = dimanche
@@ -131,6 +134,7 @@ class Config:
                 "WOWANALYZER_RAID_LINKS", "1"
             ).strip()
             in {"1", "true", "True"},
+            records_channel_id=_optional_int("RECORDS_CHANNEL_ID", None),
             recap_channel_id=_optional_int("RECAP_CHANNEL_ID", None),
             recap_weekday=min(max(_optional_int("RECAP_WEEKDAY", 0) or 0, 0), 6),
             recap_hour=min(max(_optional_int("RECAP_HOUR", 10) or 10, 0), 23),

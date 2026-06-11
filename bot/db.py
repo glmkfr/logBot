@@ -425,6 +425,37 @@ class Database:
 
     # -- Statistiques ---------------------------------------------------------
 
+    def dungeon_record(
+        self,
+        dungeon: str | None,
+        since_iso: str | None = None,
+        until_iso: str | None = None,
+    ) -> tuple[int, int | None] | None:
+        """Meilleure clé timée d'un donjon dans la fenêtre : (niveau, temps).
+
+        Niveau le plus haut, puis temps le plus court à ce niveau. Retourne None
+        si aucune clé timée n'existe pour ce donjon dans la fenêtre. Sert à
+        détecter un nouveau record avant d'insérer un run.
+        """
+        clause, params = "", [dungeon]
+        if since_iso:
+            clause += " AND created_at >= ?"
+            params.append(since_iso)
+        if until_iso:
+            clause += " AND created_at < ?"
+            params.append(until_iso)
+        with self._lock:
+            row = self._conn.execute(
+                f"""
+                SELECT level, keystone_time FROM runs
+                WHERE kind = 'mplus' AND timed = 1 AND dungeon IS ?{clause}
+                ORDER BY level DESC, keystone_time IS NULL, keystone_time ASC
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
+            return (row["level"], row["keystone_time"]) if row else None
+
     def stats(self, since_iso: str | None = None) -> Stats:
         """Statistiques M+ globales (optionnellement depuis une date ISO)."""
         where = "WHERE kind = 'mplus'"

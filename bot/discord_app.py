@@ -1203,6 +1203,39 @@ async def process_logs(
 # Sous-traitements
 # --------------------------------------------------------------------------- #
 
+async def _announce_record(
+    bot: BotLogsClient,
+    run: logic.KeystoneRun,
+    member_ids: list[int],
+    season_label: str,
+    thread: discord.Thread,
+) -> None:
+    """Annonce un nouveau record de donjon dans le canal dédié (si configuré)."""
+    channel_id = bot.config.records_channel_id
+    if not channel_id:
+        return
+    channel = bot.get_channel(channel_id)
+    if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+        log.warning("RECORDS_CHANNEL_ID introuvable ou n'est pas un canal texte.")
+        return
+
+    time_str = logic.format_duration(run.keystone_time_ms)
+    suffix = f" en **{time_str}**" if time_str else ""
+    who = " ".join(f"<@{uid}>" for uid in member_ids)
+    desc = f"**{logic.abbreviate(run.dungeon)} +{run.level}**{suffix}"
+    if who:
+        desc += f"\npar {who}"
+    desc += f"\n\n→ {thread.mention}"
+
+    embed = discord.Embed(
+        title="🎉 Nouveau record de donjon !",
+        description=desc,
+        color=discord.Color.gold(),
+    )
+    embed.set_footer(text=f"Saison : {season_label}")
+    await channel.send(embed=embed)
+
+
 async def _handle_mplus(
     bot: BotLogsClient,
     forum: discord.ForumChannel,
@@ -1225,6 +1258,8 @@ async def _handle_mplus(
     # Résout les joueurs en membres Discord (liens manuels + auto-match) pour les
     # afficher dans chaque embed. Construit une seule fois pour tout le rapport.
     resolver = await build_member_resolver(bot, getattr(forum, "guild", None))
+    # Fenêtre de la saison en cours pour la détection des records (best-effort).
+    season_since, season_until, season_label = await resolve_season_window(bot, None)
 
     for run in eligible:
         # Anti-doublon : (report_code, fight_id) déjà publié ?
@@ -1269,6 +1304,14 @@ async def _handle_mplus(
         # Message d'ouverture (route/VoD figurent dans l'embed, pas ici).
         opening = f"**Logs :** {report_url}"
 
+        # Record de saison ? On lit le meilleur AVANT d'insérer ce run.
+        is_record = False
+        if run.timed:
+            prev = await asyncio.to_thread(
+                bot.db.dungeon_record, run.dungeon, season_since, season_until
+            )
+            is_record = logic.beats_record(prev, run.level, run.keystone_time_ms)
+
         created = await forum.create_thread(
             name=title,
             content=opening,
@@ -1296,6 +1339,15 @@ async def _handle_mplus(
             bot.db.record_run_players, run.report_code, run.fight_id, players
         )
         messages.append(f"✅ Fil créé : {thread.mention}")
+
+        # Annonce du nouveau record (best-effort, ne bloque pas la publication).
+        if is_record:
+            try:
+                await _announce_record(
+                    bot, run, member_ids, season_label, thread
+                )
+            except discord.DiscordException:
+                log.exception("Échec de l'annonce de record %s", run.dungeon_abbr)
 
 
 async def _handle_raid(
