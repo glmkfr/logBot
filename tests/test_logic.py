@@ -215,6 +215,32 @@ def test_current_season_and_bounds():
     assert logic.season_bounds(seasons, seasons[2]) == ("2026-09-01", None)
 
 
+def test_runs_together_counts_shared_runs():
+    rows = [
+        _prow("A", 1, "Alice", "Skyreach", 20, 1, 800_000),
+        _prow("A", 1, "Bob", "Skyreach", 20, 1, 800_000),     # ensemble (run A/1)
+        _prow("B", 1, "Alice", "Pit of Saron", 18, 1, 700_000),
+        _prow("B", 1, "Carol", "Pit of Saron", 18, 1, 700_000),  # Alice+Carol
+        _prow("C", 1, "Bob", "Skyreach", 16, 1, 500_000),     # Bob seul
+    ]
+    resolver = {"alice": 111, "bob": 222, "carol": 333}
+    assert logic.runs_together(rows, resolver, 111, 222) == 1  # Alice & Bob : A/1
+    assert logic.runs_together(rows, resolver, 111, 333) == 1  # Alice & Carol : B/1
+    assert logic.runs_together(rows, resolver, 222, 333) == 0  # jamais ensemble
+
+
+def test_best_key_returns_top_or_none():
+    rows = [
+        _prow("A", 1, "Alice", "Skyreach", 20, 1, 800_000),
+        _prow("A", 2, "Alice", "Pit of Saron", 18, 1, 600_000),
+    ]
+    resolver = {"alice": 111}
+    p = logic.player_profile(rows, resolver, 111)
+    assert logic.best_key(p) == ("Skyreach", 20, 800_000)
+    empty = logic.player_profile(rows, {"bob": 222}, 222)
+    assert logic.best_key(empty) is None
+
+
 def test_beats_record():
     assert logic.beats_record(None, 18, 1000) is True          # premier record
     assert logic.beats_record((20, 800), 22, 900) is True       # niveau supérieur

@@ -572,6 +572,55 @@ def build_player_profile_embed(profile, title: str) -> discord.Embed:
     return embed
 
 
+def _versus_column(profile, lead: dict[str, bool]) -> str:
+    """Colonne de stats d'un joueur pour /versus ; 👑 sur les métriques gagnées."""
+    bk = logic.best_key(profile)
+    if bk:
+        dungeon, level, time_ms = bk
+        time_str = logic.format_duration(time_ms)
+        best = f"+{level} {logic.abbreviate(dungeon)}" + (f" ({time_str})" if time_str else "")
+    else:
+        best = "—"
+    crown = lambda k: " 👑" if lead.get(k) else ""
+    return (
+        f"🔑 Clés : **{profile.total}**\n"
+        f"✅ Timées : **{profile.timed}** ({profile.timed_pct:.0f} %){crown('timed')}\n"
+        f"📊 Niveau moyen : **+{profile.avg_level:.0f}**{crown('avg')}\n"
+        f"🏆 Meilleure : **{best}**{crown('best')}"
+    )
+
+
+def build_versus_embed(
+    name_a: str, profile_a, name_b: str, profile_b, together: int, label: str
+) -> discord.Embed:
+    """Embed de comparaison de deux joueurs (côte à côte)."""
+    bk_a, bk_b = logic.best_key(profile_a), logic.best_key(profile_b)
+    lvl_a = bk_a[1] if bk_a else -1
+    lvl_b = bk_b[1] if bk_b else -1
+    # Attribue la couronne au gagnant de chaque métrique (rien en cas d'égalité).
+    lead_a = {
+        "timed": profile_a.timed > profile_b.timed,
+        "avg": profile_a.avg_level > profile_b.avg_level,
+        "best": lvl_a > lvl_b,
+    }
+    lead_b = {
+        "timed": profile_b.timed > profile_a.timed,
+        "avg": profile_b.avg_level > profile_a.avg_level,
+        "best": lvl_b > lvl_a,
+    }
+    embed = discord.Embed(title=f"⚔️ {name_a} vs {name_b}", color=discord.Color.purple())
+    embed.add_field(name=name_a, value=_versus_column(profile_a, lead_a), inline=True)
+    embed.add_field(name=name_b, value=_versus_column(profile_b, lead_b), inline=True)
+    embed.add_field(
+        name="Ensemble",
+        value=f"{together} clé{'s' if together > 1 else ''} jouée"
+        f"{'s' if together > 1 else ''} ensemble",
+        inline=False,
+    )
+    embed.set_footer(text=f"Saison : {label}")
+    return embed
+
+
 def build_help_embed() -> discord.Embed:
     """Embed d'aide : présentation du bot et de ses commandes."""
     embed = discord.Embed(
@@ -600,6 +649,7 @@ def build_help_embed() -> discord.Embed:
             "• `/leaderboard [saison]` — meilleure clé timée **par donjon**.\n"
             "• `/classement-joueurs [saison]` — meilleurs **joueurs** par clés timées.\n"
             "• `/profil [membre] [saison]` — stats d'un joueur (clés, partenaires…).\n"
+            "• `/versus joueur1 joueur2 [saison]` — compare deux joueurs.\n"
             "• `/saisons` — saisons enregistrées (par défaut : la saison en cours)."
         ),
         inline=False,
@@ -1022,6 +1072,45 @@ def register_commands(bot: BotLogsClient) -> None:
             embed=build_player_profile_embed(
                 profile,
                 f"📇 Profil Mythique+ — {target.display_name} ({label})",
+            )
+        )
+
+    @bot.tree.command(
+        name="versus",
+        description="Compare deux joueurs sur leurs clés Mythique+",
+        guild=guild,
+    )
+    @app_commands.describe(
+        joueur1="Premier joueur",
+        joueur2="Second joueur",
+        saison="Saison à comparer (défaut : saison en cours)",
+    )
+    @app_commands.autocomplete(saison=season_autocomplete(bot))
+    async def versus(
+        interaction: discord.Interaction,
+        joueur1: discord.Member,
+        joueur2: discord.Member,
+        saison: str | None = None,
+    ):
+        await interaction.response.defer()
+        if joueur1.id == joueur2.id:
+            await interaction.followup.send("Choisis deux joueurs différents.")
+            return
+        since, until, label = await resolve_season_window(bot, saison)
+        rows = await asyncio.to_thread(bot.db.player_run_rows, since, until)
+        guild_obj = interaction.guild or bot.get_guild(config.guild_id)
+        resolver = await build_member_resolver(bot, guild_obj)
+        pa = logic.player_profile(rows, resolver, joueur1.id)
+        pb = logic.player_profile(rows, resolver, joueur2.id)
+        if pa.total == 0 and pb.total == 0:
+            await interaction.followup.send(
+                f"Aucune clé enregistrée pour ces deux joueurs ({label})."
+            )
+            return
+        together = logic.runs_together(rows, resolver, joueur1.id, joueur2.id)
+        await interaction.followup.send(
+            embed=build_versus_embed(
+                joueur1.display_name, pa, joueur2.display_name, pb, together, label
             )
         )
 
