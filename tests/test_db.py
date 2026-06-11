@@ -138,6 +138,23 @@ def test_runs_without_roster(tmp_path):
     db.close()
 
 
+def test_player_run_rows(tmp_path):
+    db = _db(tmp_path)
+    _record(db, code="A", fight=1, dungeon="Skyreach", level=20, timed=True, time_ms=800_000)
+    _record(db, code="A", fight=2, dungeon="Pit of Saron", level=16, timed=False)
+    db.record_run_players("A", 1, [("Alice", "Mage"), ("Bob", "Priest")])
+    # Le fight 2 n'a pas de roster : il ne produit aucune ligne joueur.
+    rows = db.player_run_rows()
+    assert len(rows) == 2
+    assert sorted(r["character_name"] for r in rows) == ["Alice", "Bob"]
+    row = next(r for r in rows if r["character_name"] == "Alice")
+    assert row["dungeon"] == "Skyreach"
+    assert row["level"] == 20
+    assert row["timed"] == 1
+    assert row["keystone_time"] == 800_000
+    db.close()
+
+
 def test_member_links(tmp_path):
     db = _db(tmp_path)
     assert db.get_character_link("alice") is None

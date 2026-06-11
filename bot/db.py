@@ -228,6 +228,29 @@ class Database:
             )
             return [(r["character_name"], r["class"]) for r in cur.fetchall()]
 
+    def player_run_rows(self, since_iso: str | None = None) -> list[sqlite3.Row]:
+        """Lignes (joueur × run M+) pour les stats joueurs.
+
+        Chaque ligne joint un personnage de `run_players` à son run M+ :
+        report_code, fight_id, character_name, dungeon, level, timed,
+        keystone_time. `since_iso` limite aux runs publiés depuis cette date.
+        Les Row renvoyés sont détachés de la connexion (utilisables hors verrou).
+        """
+        query = (
+            "SELECT p.report_code, p.fight_id, p.character_name, "
+            "       r.dungeon, r.level, r.timed, r.keystone_time "
+            "FROM run_players p "
+            "JOIN runs r ON r.report_code = p.report_code "
+            "          AND r.fight_id = p.fight_id "
+            "WHERE r.kind = 'mplus'"
+        )
+        params: tuple = ()
+        if since_iso:
+            query += " AND r.created_at >= ?"
+            params = (since_iso,)
+        with self._lock:
+            return self._conn.execute(query, params).fetchall()
+
     # -- Liaison perso WoW <-> membre Discord ---------------------------------
 
     def link_character(self, character_key: str, discord_user_id: int) -> None:
