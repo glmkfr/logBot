@@ -152,53 +152,6 @@ def test_normalize_character_strips_realm_and_accents():
     assert logic.normalize_character("") == ""
 
 
-def _prow(rc, fid, name, dungeon, level, timed, time_ms):
-    return {
-        "report_code": rc, "fight_id": fid, "character_name": name,
-        "dungeon": dungeon, "level": level, "timed": timed, "keystone_time": time_ms,
-    }
-
-
-def test_player_rankings_orders_and_filters():
-    rows = [
-        _prow("A", 1, "Alice", "Skyreach", 20, 1, 800_000),
-        _prow("A", 2, "Alice", "Pit of Saron", 18, 1, 600_000),
-        _prow("B", 1, "Bob", "Pit of Saron", 18, 1, 700_000),
-        _prow("C", 1, "Alice", "Skyreach", 24, 0, None),   # non timé : ignoré
-        _prow("D", 1, "Carol", "Skyreach", 16, 1, 500_000),  # non résolu : exclu
-    ]
-    resolver = {"alice": 111, "bob": 222}  # Carol absente du resolver
-    ranking = logic.player_rankings(rows, resolver)
-
-    assert [r.user_id for r in ranking] == [111, 222]  # Alice (+20) avant Bob (+18)
-    alice = ranking[0]
-    assert alice.best_level == 20  # la +24 non timée ne compte pas
-    assert alice.best_dungeon == "Skyreach"
-    assert alice.timed_count == 2
-    assert alice.avg_level == 19.0  # (20 + 18) / 2
-
-
-def test_player_profile_stats_and_partners():
-    rows = [
-        _prow("A", 1, "Alice", "Skyreach", 20, 1, 800_000),
-        _prow("A", 1, "Bob", "Skyreach", 20, 1, 800_000),
-        _prow("A", 2, "Alice", "Skyreach", 18, 1, 900_000),  # même donjon, moins bien
-        _prow("B", 1, "Alice", "Pit of Saron", 16, 0, None),  # non timé
-        _prow("B", 1, "Carol", "Pit of Saron", 16, 0, None),
-    ]
-    resolver = {"alice": 111, "bob": 222, "carol": 333}
-    p = logic.player_profile(rows, resolver, 111)
-
-    assert p.total == 3                      # runs A/1, A/2, B/1
-    assert p.timed == 2
-    assert round(p.timed_pct) == 67
-    # Meilleure clé timée par donjon : Skyreach +20 ; Pit (non timé) absent.
-    assert p.best_by_dungeon[0] == ("Skyreach", 20, 800_000)
-    assert all(d != "Pit of Saron" for d, _, _ in p.best_by_dungeon)
-    # Partenaires : Bob (run A/1) et Carol (run B/1), une fois chacun.
-    assert dict(p.partners) == {222: 1, 333: 1}
-
-
 def test_affix_label_known_and_unknown():
     assert logic.affix_label(10) == "Fortifié"
     assert logic.affix_label(999999) == "Affixe #999999"

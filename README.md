@@ -42,12 +42,6 @@ statistiques, et boutons pour ajouter route/VoD a posteriori.
   Discord des joueurs** de la clé record présents sur le serveur (aspect
   compétitif) : via la liaison manuelle **`/lier`**, et — si `ENABLE_MEMBER_MATCHING`
   est activé — par correspondance automatique nom de perso ↔ pseudo Discord.
-- **Classements joueurs** : **`/classement-joueurs`** (Top des membres par clés
-  timées) et **`/profil [membre]`** (stats individuelles, meilleures clés par
-  donjon, partenaires fréquents). Les **pseudos** apparaissent aussi dans l'embed
-  de chaque fil de run, et un **« Joueur de la semaine »** est mis en avant dans le
-  récap hebdomadaire.
-- **`/aide`** : récapitulatif du bot et de ses commandes, directement sur Discord.
 - **Auto-détection** : coller un lien Warcraft Logs dans un canal configuré
   (`AUTO_DETECT_CHANNEL_IDS`) crée les fils automatiquement, sans taper `/logs`.
 - **Récap hebdomadaire automatique** : poste les stats de la semaine dans un
@@ -183,14 +177,9 @@ Les slash-commands sont synchronisées sur le `GUILD_ID` au démarrage
   timée et, sur la vue globale, la tendance des 6 dernières semaines).
 - `/leaderboard` — meilleure clé timée par donjon (niveau record + meilleur temps),
   avec les pseudos Discord des joueurs de la clé record présents sur le serveur.
-- `/classement-joueurs` — classement des **joueurs** par meilleure clé timée, nombre
-  de clés et niveau moyen (Top 15).
-- `/profil [membre]` — statistiques d'un joueur : clés, % timées, niveau moyen,
-  meilleure clé par donjon et partenaires fréquents (par défaut : toi).
 - `/lier personnage:<nom>` — associe un personnage WoW à ton compte Discord pour
-  apparaître dans les classements et les fils (le royaume est ignoré). `/delier`
-  retire l'association, `/mes-persos` liste tes personnages liés.
-- `/aide` — récapitulatif du fonctionnement du bot et de ses commandes.
+  apparaître sur le `/leaderboard` (le royaume est ignoré). `/delier` retire
+  l'association, `/mes-persos` liste tes personnages liés.
 
 > **Backfill** : les clés publiées avant cette feature n'ont pas de roster en
 > base. Pour le récupérer a posteriori (ré-interroge Warcraft Logs, idempotent) :

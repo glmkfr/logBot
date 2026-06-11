@@ -220,25 +220,6 @@ class BotLogsClient(discord.Client):
             )
             return
         embed = build_stats_embed(data, "📊 Récap hebdomadaire Mythique+")
-
-        # Joueur de la semaine : meilleur au classement sur les runs de la semaine.
-        rows = await asyncio.to_thread(self.db.player_run_rows, since)
-        resolver = await build_member_resolver(self, self.get_guild(self.config.guild_id))
-        rankings = logic.player_rankings(rows, resolver)
-        if rankings:
-            top = rankings[0]
-            embed.add_field(
-                name="🏅 Joueur de la semaine",
-                value=(
-                    f"<@{top.user_id}> — {top.timed_count} clé"
-                    f"{'s' if top.timed_count > 1 else ''} timée"
-                    f"{'s' if top.timed_count > 1 else ''}, "
-                    f"meilleure **+{top.best_level}** "
-                    f"{logic.abbreviate(top.best_dungeon)}"
-                ),
-                inline=False,
-            )
-
         await channel.send(embed=embed)
 
     @weekly_recap_loop.before_loop
@@ -397,7 +378,6 @@ def build_mplus_embed(
     deaths: int | None,
     route: str | None = None,
     vod: str | None = None,
-    member_mentions: str | None = None,
 ) -> discord.Embed:
     """Construit l'embed enrichi d'un run M+ (dégrade les champs manquants)."""
     color = discord.Color.green() if run.timed else discord.Color.orange()
@@ -423,9 +403,6 @@ def build_mplus_embed(
 
     if composition:
         embed.add_field(name="Composition", value=composition, inline=False)
-
-    if member_mentions:
-        embed.add_field(name="Joueurs (Discord)", value=member_mentions, inline=False)
 
     if deaths is not None:
         embed.add_field(name="Morts", value=str(deaths), inline=True)
@@ -519,146 +496,28 @@ def build_leaderboard_embed(
     return embed
 
 
-def build_player_ranking_embed(rankings: list, title: str) -> discord.Embed:
-    """Embed du classement des joueurs (meilleure clé timée, nb de clés)."""
-    embed = discord.Embed(title=title, color=discord.Color.gold())
-    medals = {0: "🥇", 1: "🥈", 2: "🥉"}
-    lines = []
-    for i, r in enumerate(rankings):
-        rank = medals.get(i, f"`{i + 1}.`")
-        time_str = logic.format_duration(r.best_time_ms)
-        suffix = f" en {time_str}" if time_str else ""
-        lines.append(
-            f"{rank} <@{r.user_id}> — **+{r.best_level}** "
-            f"{logic.abbreviate(r.best_dungeon)}{suffix} · "
-            f"{r.timed_count} timée{'s' if r.timed_count > 1 else ''} · "
-            f"moy. +{r.avg_level:.0f}"
-        )
-    embed.description = "\n".join(lines)
-    embed.set_footer(text="Lie tes persos avec /lier pour apparaître ici.")
-    return embed
-
-
-def build_player_profile_embed(profile, title: str) -> discord.Embed:
-    """Embed du profil d'un joueur (clés, meilleures par donjon, partenaires)."""
-    embed = discord.Embed(title=title, color=discord.Color.teal())
-    embed.add_field(name="Clés", value=str(profile.total), inline=True)
-    embed.add_field(
-        name="Timées",
-        value=f"{profile.timed} ({profile.timed_pct:.0f} %)",
-        inline=True,
-    )
-    embed.add_field(name="Niveau moyen", value=f"+{profile.avg_level:.0f}", inline=True)
-
-    if profile.best_by_dungeon:
-        top = profile.best_by_dungeon[:8]
-        lines = []
-        for dungeon, level, time_ms in top:
-            time_str = logic.format_duration(time_ms)
-            suffix = f" en {time_str}" if time_str else ""
-            lines.append(f"**{logic.abbreviate(dungeon)}** +{level}{suffix}")
-        embed.add_field(
-            name="Meilleures clés timées par donjon",
-            value="\n".join(lines),
-            inline=False,
-        )
-
-    if profile.partners:
-        partners = " · ".join(
-            f"<@{uid}> ({n})" for uid, n in profile.partners
-        )
-        embed.add_field(name="Partenaires fréquents", value=partners, inline=False)
-
-    return embed
-
-
-def build_help_embed() -> discord.Embed:
-    """Embed d'aide : présentation du bot et de ses commandes."""
-    embed = discord.Embed(
-        title="🤖 Aide — Bot Warcraft Logs",
-        description=(
-            "Je transforme un lien **Warcraft Logs** en fils de forum par run "
-            "(M+ et raid), avec embed enrichi, tags, liens profonds, et je tiens "
-            "des statistiques et des classements."
-        ),
-        color=discord.Color.blurple(),
-    )
-    embed.add_field(
-        name="📥 Publier des logs",
-        value=(
-            "• `/logs lien:<url> [niveau_min] [route] [vod]` — crée le(s) fil(s) "
-            "d'un rapport.\n"
-            "• Coller un lien WCL dans un canal suivi crée les fils "
-            "automatiquement (selon configuration)."
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="📊 Statistiques & classements",
-        value=(
-            "• `/stats [periode]` — clés, % timées, niveau moyen, tendance.\n"
-            "• `/leaderboard` — meilleure clé timée **par donjon**.\n"
-            "• `/classement-joueurs` — meilleurs **joueurs** par clés timées.\n"
-            "• `/profil [membre]` — stats d'un joueur (clés, partenaires…)."
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="🔗 Apparaître dans les classements",
-        value=(
-            "• `/lier <personnage>` — associe un perso WoW à ton compte Discord.\n"
-            "• `/delier <personnage>` · `/mes-persos` — gère tes associations."
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="🧵 Sur chaque fil de run",
-        value="Boutons **« Ajouter la route »** / **« Ajouter la VoD »**.",
-        inline=False,
-    )
-    return embed
-
-
-async def build_member_resolver(
-    bot: BotLogsClient, guild: discord.Guild | None
-) -> dict[str, int]:
-    """Construit le dictionnaire {nom de perso normalisé -> ID Discord}.
-
-    Deux sources fusionnées : l'auto-match (pseudos/surnoms du serveur, seulement
-    si `ENABLE_MEMBER_MATCHING` et l'intent « members » sont disponibles) puis,
-    par-dessus (donc prioritaires), les liaisons manuelles `/lier`.
-    """
-    resolver: dict[str, int] = {}
-    if bot.config.enable_member_matching and guild is not None:
-        for member in guild.members:
-            for label in (member.nick, getattr(member, "global_name", None), member.name):
-                if label:
-                    resolver.setdefault(logic.normalize_character(label), member.id)
-    links = await asyncio.to_thread(bot.db.all_character_links)
-    resolver.update(links)  # les liens manuels priment sur l'auto-match
-    return resolver
-
-
-def resolve_player_ids(
-    players: list[tuple[str, str | None]], resolver: dict[str, int]
-) -> list[int]:
-    """Résout un roster en IDs Discord uniques (ordre conservé, dédupliqué)."""
-    ids: list[int] = []
-    seen: set[int] = set()
-    for name, _cls in players:
-        uid = resolver.get(logic.normalize_character(name))
-        if uid is not None and uid not in seen:
-            seen.add(uid)
-            ids.append(uid)
-    return ids
-
-
 async def resolve_leaderboard_players(
     bot: BotLogsClient, guild: discord.Guild | None, entries: list
 ) -> list[list[int]]:
     """Pour chaque entrée du classement, résout les joueurs de la clé record en
-    IDs de membres Discord présents sur le serveur (cf. build_member_resolver)."""
-    resolver = await build_member_resolver(bot, guild)
+    IDs de membres Discord présents sur le serveur.
+
+    Deux sources, dans l'ordre : la liaison manuelle (/lier), puis — si
+    l'auto-match est activé — la correspondance du nom de perso normalisé avec
+    les pseudos/surnoms des membres du serveur. Les membres en double (un même
+    membre via plusieurs persos) sont dédupliqués.
+    """
+    links = await asyncio.to_thread(bot.db.all_character_links)
+
+    # Index des pseudos du serveur -> ID (uniquement si l'auto-match est activé
+    # et l'intent « members » disponible, sinon guild.members est vide).
+    member_index: dict[str, int] = {}
+    if bot.config.enable_member_matching and guild is not None:
+        for member in guild.members:
+            for label in (member.nick, getattr(member, "global_name", None), member.name):
+                if label:
+                    member_index.setdefault(logic.normalize_character(label), member.id)
+
     result: list[list[int]] = []
     for e in entries:
         ids: list[int] = []
@@ -666,7 +525,15 @@ async def resolve_leaderboard_players(
             players = await asyncio.to_thread(
                 bot.db.get_run_players, e.report_code, e.fight_id
             )
-            ids = resolve_player_ids(players, resolver)
+            seen: set[int] = set()
+            for name, _cls in players:
+                key = logic.normalize_character(name)
+                uid = links.get(key)
+                if uid is None:
+                    uid = member_index.get(key)
+                if uid is not None and uid not in seen:
+                    seen.add(uid)
+                    ids.append(uid)
         result.append(ids)
     return result
 
@@ -881,66 +748,6 @@ def register_commands(bot: BotLogsClient) -> None:
             f"Tes personnages associés :\n{listing}", ephemeral=True
         )
 
-    @bot.tree.command(
-        name="classement-joueurs",
-        description="Classement des joueurs par meilleure clé Mythique+ timée",
-        guild=guild,
-    )
-    async def classement_joueurs(interaction: discord.Interaction):
-        await interaction.response.defer()
-        rows = await asyncio.to_thread(bot.db.player_run_rows)
-        guild_obj = interaction.guild or bot.get_guild(config.guild_id)
-        resolver = await build_member_resolver(bot, guild_obj)
-        rankings = logic.player_rankings(rows, resolver)
-        if not rankings:
-            await interaction.followup.send(
-                "Aucun joueur à classer pour l'instant. Liez vos persos avec "
-                "`/lier <personnage>` pour apparaître ici."
-            )
-            return
-        await interaction.followup.send(
-            embed=build_player_ranking_embed(
-                rankings[:15], "🏅 Classement des joueurs Mythique+"
-            )
-        )
-
-    @bot.tree.command(
-        name="profil",
-        description="Statistiques Mythique+ d'un joueur",
-        guild=guild,
-    )
-    @app_commands.describe(membre="Le membre à inspecter (par défaut : toi)")
-    async def profil(
-        interaction: discord.Interaction, membre: discord.Member | None = None
-    ):
-        await interaction.response.defer()
-        target = membre or interaction.user
-        rows = await asyncio.to_thread(bot.db.player_run_rows)
-        guild_obj = interaction.guild or bot.get_guild(config.guild_id)
-        resolver = await build_member_resolver(bot, guild_obj)
-        profile = logic.player_profile(rows, resolver, target.id)
-        if profile.total == 0:
-            await interaction.followup.send(
-                f"Aucune clé enregistrée pour {target.mention}. "
-                f"A-t-il lié ses persos avec `/lier` ?"
-            )
-            return
-        await interaction.followup.send(
-            embed=build_player_profile_embed(
-                profile, f"📇 Profil Mythique+ — {target.display_name}"
-            )
-        )
-
-    @bot.tree.command(
-        name="aide",
-        description="Comment fonctionne le bot et la liste des commandes",
-        guild=guild,
-    )
-    async def aide(interaction: discord.Interaction):
-        await interaction.response.send_message(
-            embed=build_help_embed(), ephemeral=True
-        )
-
 
 # --------------------------------------------------------------------------- #
 # Traitement d'un rapport (partagé par /logs et l'auto-détection)
@@ -1034,9 +841,6 @@ async def _handle_mplus(
         return
 
     titles = logic.build_titles(eligible)
-    # Résout les joueurs en membres Discord (liens manuels + auto-match) pour les
-    # afficher dans chaque embed. Construit une seule fois pour tout le rapport.
-    resolver = await build_member_resolver(bot, getattr(forum, "guild", None))
 
     for run in eligible:
         # Anti-doublon : (report_code, fight_id) déjà publié ?
@@ -1055,14 +859,9 @@ async def _handle_mplus(
         players = logic.composition_names(report, fight)
         deaths = await bot.wcl.fetch_death_count(run.report_code, run.fight_id)
 
-        member_ids = resolve_player_ids(players, resolver)
-        member_mentions = (
-            " ".join(f"<@{uid}>" for uid in member_ids) if member_ids else None
-        )
-
         embed = build_mplus_embed(
             run, report_url=report_url, composition=comp, deaths=deaths,
-            route=route, vod=vod, member_mentions=member_mentions,
+            route=route, vod=vod,
         )
 
         # Tags : donjon (complet + abrégé) + statut.
