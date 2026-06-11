@@ -175,6 +175,32 @@ def test_player_run_rows_window(tmp_path):
     db.close()
 
 
+def test_raid_progress_accumulates(tmp_path):
+    db = _db(tmp_path)
+    assert db.raid_zones() == []
+    # 1er rapport : boss A wipe à 30 %, boss B wipe à 80 %.
+    db.update_raid_progress("Nerub-ar", [
+        (1, "Ulgrax", False, 5, 30.0),
+        (2, "Bloodbound", False, 3, 80.0),
+    ])
+    # 2e rapport : A tué (10 pulls), B amélioré à 12 %.
+    db.update_raid_progress("Nerub-ar", [
+        (1, "Ulgrax", True, 10, None),
+        (2, "Bloodbound", False, 4, 12.0),
+    ])
+    assert db.raid_zones() == ["Nerub-ar"]
+    rows = {r["name"]: r for r in db.raid_progress("Nerub-ar")}
+    # Boss A : tué, pulls cumulés 15, plus de pourcentage.
+    assert rows["Ulgrax"]["killed"] == 1
+    assert rows["Ulgrax"]["total_pulls"] == 15
+    assert rows["Ulgrax"]["best_percentage"] is None
+    # Boss B : pas tué, meilleur (plus bas) % = 12, pulls cumulés 7.
+    assert rows["Bloodbound"]["killed"] == 0
+    assert rows["Bloodbound"]["best_percentage"] == 12.0
+    assert rows["Bloodbound"]["total_pulls"] == 7
+    db.close()
+
+
 def test_dungeon_record(tmp_path):
     db = _db(tmp_path)
     assert db.dungeon_record("Skyreach") is None

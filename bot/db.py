@@ -70,6 +70,20 @@ CREATE TABLE IF NOT EXISTS member_links (
     added_at        TEXT    NOT NULL
 );
 
+-- Progression de raid cumulée par boss et par zone (au fil des rapports).
+-- best_percentage = % de vie restante du boss au meilleur essai (NULL si tué).
+CREATE TABLE IF NOT EXISTS raid_progress (
+    zone            TEXT    NOT NULL,
+    encounter_id    INTEGER NOT NULL,
+    name            TEXT    NOT NULL,
+    killed          INTEGER NOT NULL DEFAULT 0,
+    best_percentage REAL,
+    total_pulls     INTEGER NOT NULL DEFAULT 0,
+    first_seen      TEXT    NOT NULL,
+    last_seen       TEXT    NOT NULL,
+    PRIMARY KEY (zone, encounter_id)
+);
+
 -- Saisons Mythique+ : une saison débute à start_date (YYYY-MM-DD) et court
 -- jusqu'au début de la suivante. Sert à filtrer leaderboard/classement/profil.
 CREATE TABLE IF NOT EXISTS seasons (
@@ -429,6 +443,63 @@ class Database:
                 return True
             except sqlite3.IntegrityError:
                 return False
+
+    # -- Progression de raid --------------------------------------------------
+
+    def update_raid_progress(
+        self, zone: str, encounters: list[tuple[int, str, bool, int, float | None]]
+    ) -> None:
+        """Met à jour la progression cumulée d'une zone à partir d'un rapport.
+
+        `encounters` : (encounter_id, nom, tué, nb_pulls, best_percentage). Cumule
+        les pulls, retient « tué » dès qu'un kill a eu lieu, et le meilleur (plus
+        bas) pourcentage tant que le boss n'est pas tué.
+        """
+        now = self._now()
+        with self._lock:
+            for enc_id, name, killed, pulls, best_pct in encounters:
+                self._conn.execute(
+                    """
+                    INSERT INTO raid_progress
+                        (zone, encounter_id, name, killed, best_percentage,
+                         total_pulls, first_seen, last_seen)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(zone, encounter_id) DO UPDATE SET
+                        name = excluded.name,
+                        killed = MAX(killed, excluded.killed),
+                        best_percentage = CASE
+                            WHEN killed = 1 OR excluded.killed = 1 THEN NULL
+                            WHEN best_percentage IS NULL THEN excluded.best_percentage
+                            WHEN excluded.best_percentage IS NULL THEN best_percentage
+                            ELSE MIN(best_percentage, excluded.best_percentage)
+                        END,
+                        total_pulls = total_pulls + excluded.total_pulls,
+                        last_seen = excluded.last_seen
+                    """,
+                    (
+                        zone, enc_id, name, int(killed),
+                        None if killed else best_pct, pulls, now, now,
+                    ),
+                )
+            self._conn.commit()
+
+    def raid_zones(self) -> list[str]:
+        """Zones de raid suivies, de la plus récemment vue à la plus ancienne."""
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT zone, MAX(last_seen) AS seen FROM raid_progress "
+                "GROUP BY zone ORDER BY seen DESC"
+            )
+            return [r["zone"] for r in cur.fetchall()]
+
+    def raid_progress(self, zone: str) -> list[sqlite3.Row]:
+        """Progression d'une zone, boss par boss (ordre d'encounter)."""
+        with self._lock:
+            return self._conn.execute(
+                "SELECT name, killed, best_percentage, total_pulls "
+                "FROM raid_progress WHERE zone = ? ORDER BY encounter_id ASC",
+                (zone,),
+            ).fetchall()
 
     # -- Liens route / VoD ----------------------------------------------------
 
