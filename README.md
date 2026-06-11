@@ -46,7 +46,7 @@ statistiques, et boutons pour ajouter route/VoD a posteriori.
   timées) et **`/profil [membre]`** (stats individuelles, meilleures clés par
   donjon, partenaires fréquents). Les **pseudos** apparaissent aussi dans l'embed
   de chaque fil de run, et un **« Joueur de la semaine »** est mis en avant dans le
-  récap hebdomadaire.
+  récap hebdomadaire. **`/versus`** compare deux joueurs côte à côte.
 - **Saisons M+** : les classements (`/leaderboard`, `/classement-joueurs`, `/profil`)
   portent par défaut sur la **saison en cours**, avec option pour une autre saison ou
   tout l'historique. Gestion via **`/nouvelle-saison`** / **`/supprimer-saison`**
@@ -196,6 +196,8 @@ Les slash-commands sont synchronisées sur le `GUILD_ID` au démarrage
   nombre de clés et niveau moyen (Top 15).
 - `/profil [membre] [saison]` — statistiques d'un joueur : clés, % timées, niveau moyen,
   meilleure clé par donjon et partenaires fréquents (par défaut : toi).
+- `/versus joueur1 joueur2 [saison]` — compare deux joueurs côte à côte (clés, % timées,
+  niveau moyen, meilleure clé, clés jouées ensemble).
 - `/saisons` — liste les saisons M+. Les classements ci-dessus portent par défaut sur
   la **saison en cours** ; le paramètre `saison` permet d'en choisir une autre ou
   `Tout l'historique`.

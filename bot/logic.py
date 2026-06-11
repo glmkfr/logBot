@@ -372,6 +372,26 @@ def player_profile(
     )
 
 
+def best_key(profile: PlayerProfile) -> tuple[str, int, int | None] | None:
+    """Meilleure clé timée toutes catégories d'un profil (ou None)."""
+    return profile.best_by_dungeon[0] if profile.best_by_dungeon else None
+
+
+def runs_together(
+    rows: Sequence[Mapping], resolver: Mapping[str, int], uid_a: int, uid_b: int
+) -> int:
+    """Nombre de runs où deux membres Discord ont joué ensemble."""
+    members_by_run: dict[tuple, set[int]] = defaultdict(set)
+    for row in rows:
+        uid = _resolve(resolver, row["character_name"])
+        if uid is not None:
+            members_by_run[(row["report_code"], row["fight_id"])].add(uid)
+    return sum(
+        1 for members in members_by_run.values()
+        if uid_a in members and uid_b in members
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Mythique+
 # --------------------------------------------------------------------------- #
