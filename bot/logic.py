@@ -173,6 +173,37 @@ def composition_summary(report: dict, fight: dict) -> str | None:
 
 
 # --------------------------------------------------------------------------- #
+# Saisons (filtrage temporel des classements)
+# --------------------------------------------------------------------------- #
+#
+# Fonctions pures opérant sur une liste de saisons (objets exposant .start_date
+# au format YYYY-MM-DD, triés du plus ancien au plus récent) et des dates ISO.
+# La comparaison lexicographique des dates ISO suffit (pas besoin de parsing).
+
+
+def current_season(seasons: Sequence, today: str):
+    """La saison en cours : la plus récente débutée au plus tard `today`.
+
+    `seasons` est trié par date croissante ; `today` est une date ISO
+    (YYYY-MM-DD). Retourne None si aucune saison n'a encore commencé.
+    """
+    started = [s for s in seasons if s.start_date <= today]
+    return started[-1] if started else None
+
+
+def season_bounds(seasons: Sequence, season) -> tuple[str, str | None]:
+    """Bornes (since, until) d'une saison : de son début au début de la suivante.
+
+    `until` vaut None pour la saison la plus récente (pas de borne haute).
+    """
+    until = None
+    for s in seasons:
+        if s.start_date > season.start_date and (until is None or s.start_date < until):
+            until = s.start_date
+    return season.start_date, until
+
+
+# --------------------------------------------------------------------------- #
 # Statistiques par joueur (classement / profil)
 # --------------------------------------------------------------------------- #
 #

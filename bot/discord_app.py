@@ -597,9 +597,10 @@ def build_help_embed() -> discord.Embed:
         name="📊 Statistiques & classements",
         value=(
             "• `/stats [periode]` — clés, % timées, niveau moyen, tendance.\n"
-            "• `/leaderboard` — meilleure clé timée **par donjon**.\n"
-            "• `/classement-joueurs` — meilleurs **joueurs** par clés timées.\n"
-            "• `/profil [membre]` — stats d'un joueur (clés, partenaires…)."
+            "• `/leaderboard [saison]` — meilleure clé timée **par donjon**.\n"
+            "• `/classement-joueurs [saison]` — meilleurs **joueurs** par clés timées.\n"
+            "• `/profil [membre] [saison]` — stats d'un joueur (clés, partenaires…).\n"
+            "• `/saisons` — saisons enregistrées (par défaut : la saison en cours)."
         ),
         inline=False,
     )
@@ -693,6 +694,78 @@ def make_role_check(config: Config):
     return app_commands.check(predicate)
 
 
+def make_admin_check(config: Config):
+    """Check pour les commandes d'administration (saisons, /lier-admin…).
+
+    Autorise les membres ayant un des `ADMIN_ROLE_IDS`. Si aucun n'est configuré,
+    on se replie sur la permission Discord « Gérer le serveur » (manage_guild).
+    """
+
+    async def predicate(interaction: discord.Interaction) -> bool:
+        member = interaction.user
+        if isinstance(member, discord.Member):
+            if config.admin_role_ids:
+                if {r.id for r in member.roles} & set(config.admin_role_ids):
+                    return True
+            elif member.guild_permissions.manage_guild:
+                return True
+        raise app_commands.CheckFailure(
+            "Cette commande est réservée aux responsables."
+        )
+
+    return app_commands.check(predicate)
+
+
+# Valeur spéciale du paramètre `saison` pour ignorer le filtre de saison.
+SEASON_ALL = "__all__"
+
+
+async def resolve_season_window(
+    bot: BotLogsClient, saison: str | None
+) -> tuple[str | None, str | None, str]:
+    """Traduit le choix `saison` en fenêtre (since_iso, until_iso, libellé).
+
+    - None  -> saison en cours (ou tout l'historique si aucune saison définie) ;
+    - SEASON_ALL -> pas de filtre (« tout l'historique ») ;
+    - nom de saison -> bornes de cette saison.
+    Un nom inconnu est traité comme « saison en cours » (dégradation propre).
+    """
+    if saison == SEASON_ALL:
+        return None, None, "tout l'historique"
+
+    seasons = await asyncio.to_thread(bot.db.list_seasons)
+    if not seasons:
+        return None, None, "tout l'historique"
+
+    season = None
+    if saison:
+        season = await asyncio.to_thread(bot.db.get_season_by_name, saison)
+    if season is None:
+        today = datetime.date.today().isoformat()
+        season = logic.current_season(seasons, today)
+    if season is None:
+        return None, None, "tout l'historique"
+
+    since, until = logic.season_bounds(seasons, season)
+    return since, until, season.name
+
+
+def season_autocomplete(bot: BotLogsClient):
+    """Autocomplétion du paramètre `saison` : « tout » + les saisons connues."""
+
+    async def autocomplete(
+        interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        choices = [app_commands.Choice(name="Tout l'historique", value=SEASON_ALL)]
+        seasons = await asyncio.to_thread(bot.db.list_seasons)
+        for s in reversed(seasons):  # plus récentes d'abord
+            if current.lower() in s.name.lower():
+                choices.append(app_commands.Choice(name=s.name, value=s.name))
+        return choices[:25]
+
+    return autocomplete
+
+
 # --------------------------------------------------------------------------- #
 # Enregistrement des commandes
 # --------------------------------------------------------------------------- #
@@ -701,6 +774,7 @@ def register_commands(bot: BotLogsClient) -> None:
     config = bot.config
     guild = discord.Object(id=config.guild_id)
     role_check = make_role_check(config)
+    admin_check = make_admin_check(config)
 
     @bot.tree.command(
         name="logs",
@@ -794,19 +868,26 @@ def register_commands(bot: BotLogsClient) -> None:
         description="Meilleure clé Mythique+ timée par donjon",
         guild=guild,
     )
-    async def leaderboard(interaction: discord.Interaction):
+    @app_commands.describe(
+        saison="Saison à afficher (défaut : saison en cours)"
+    )
+    @app_commands.autocomplete(saison=season_autocomplete(bot))
+    async def leaderboard(
+        interaction: discord.Interaction, saison: str | None = None
+    ):
         await interaction.response.defer()
-        entries = await asyncio.to_thread(bot.db.leaderboard)
+        since, until, label = await resolve_season_window(bot, saison)
+        entries = await asyncio.to_thread(bot.db.leaderboard, since, until)
         if not entries:
             await interaction.followup.send(
-                "Aucune clé timée enregistrée pour l'instant."
+                f"Aucune clé timée enregistrée ({label})."
             )
             return
         guild = interaction.guild or bot.get_guild(config.guild_id)
         member_ids = await resolve_leaderboard_players(bot, guild, entries)
         await interaction.followup.send(
             embed=build_leaderboard_embed(
-                entries, "🏆 Records Mythique+ par donjon", member_ids
+                entries, f"🏆 Records Mythique+ par donjon — {label}", member_ids
             )
         )
 
@@ -886,21 +967,26 @@ def register_commands(bot: BotLogsClient) -> None:
         description="Classement des joueurs par meilleure clé Mythique+ timée",
         guild=guild,
     )
-    async def classement_joueurs(interaction: discord.Interaction):
+    @app_commands.describe(saison="Saison à afficher (défaut : saison en cours)")
+    @app_commands.autocomplete(saison=season_autocomplete(bot))
+    async def classement_joueurs(
+        interaction: discord.Interaction, saison: str | None = None
+    ):
         await interaction.response.defer()
-        rows = await asyncio.to_thread(bot.db.player_run_rows)
+        since, until, label = await resolve_season_window(bot, saison)
+        rows = await asyncio.to_thread(bot.db.player_run_rows, since, until)
         guild_obj = interaction.guild or bot.get_guild(config.guild_id)
         resolver = await build_member_resolver(bot, guild_obj)
         rankings = logic.player_rankings(rows, resolver)
         if not rankings:
             await interaction.followup.send(
-                "Aucun joueur à classer pour l'instant. Liez vos persos avec "
+                f"Aucun joueur à classer ({label}). Liez vos persos avec "
                 "`/lier <personnage>` pour apparaître ici."
             )
             return
         await interaction.followup.send(
             embed=build_player_ranking_embed(
-                rankings[:15], "🏅 Classement des joueurs Mythique+"
+                rankings[:15], f"🏅 Classement des joueurs Mythique+ — {label}"
             )
         )
 
@@ -909,25 +995,33 @@ def register_commands(bot: BotLogsClient) -> None:
         description="Statistiques Mythique+ d'un joueur",
         guild=guild,
     )
-    @app_commands.describe(membre="Le membre à inspecter (par défaut : toi)")
+    @app_commands.describe(
+        membre="Le membre à inspecter (par défaut : toi)",
+        saison="Saison à afficher (défaut : saison en cours)",
+    )
+    @app_commands.autocomplete(saison=season_autocomplete(bot))
     async def profil(
-        interaction: discord.Interaction, membre: discord.Member | None = None
+        interaction: discord.Interaction,
+        membre: discord.Member | None = None,
+        saison: str | None = None,
     ):
         await interaction.response.defer()
         target = membre or interaction.user
-        rows = await asyncio.to_thread(bot.db.player_run_rows)
+        since, until, label = await resolve_season_window(bot, saison)
+        rows = await asyncio.to_thread(bot.db.player_run_rows, since, until)
         guild_obj = interaction.guild or bot.get_guild(config.guild_id)
         resolver = await build_member_resolver(bot, guild_obj)
         profile = logic.player_profile(rows, resolver, target.id)
         if profile.total == 0:
             await interaction.followup.send(
-                f"Aucune clé enregistrée pour {target.mention}. "
+                f"Aucune clé enregistrée pour {target.mention} ({label}). "
                 f"A-t-il lié ses persos avec `/lier` ?"
             )
             return
         await interaction.followup.send(
             embed=build_player_profile_embed(
-                profile, f"📇 Profil Mythique+ — {target.display_name}"
+                profile,
+                f"📇 Profil Mythique+ — {target.display_name} ({label})",
             )
         )
 
@@ -940,6 +1034,100 @@ def register_commands(bot: BotLogsClient) -> None:
         await interaction.response.send_message(
             embed=build_help_embed(), ephemeral=True
         )
+
+    @bot.tree.command(
+        name="saisons",
+        description="Liste les saisons Mythique+ enregistrées",
+        guild=guild,
+    )
+    async def saisons(interaction: discord.Interaction):
+        seasons = await asyncio.to_thread(bot.db.list_seasons)
+        if not seasons:
+            await interaction.response.send_message(
+                "Aucune saison définie. Un responsable peut en créer une avec "
+                "`/nouvelle-saison`.",
+                ephemeral=True,
+            )
+            return
+        today = datetime.date.today().isoformat()
+        current = logic.current_season(seasons, today)
+        lines = []
+        for s in reversed(seasons):  # plus récentes en premier
+            marker = " ⬅️ en cours" if current and s.id == current.id else ""
+            lines.append(f"• **{s.name}** — depuis le {s.start_date}{marker}")
+        await interaction.response.send_message(
+            "**Saisons Mythique+ :**\n" + "\n".join(lines), ephemeral=True
+        )
+
+    @bot.tree.command(
+        name="nouvelle-saison",
+        description="(Responsables) Crée une saison Mythique+",
+        guild=guild,
+    )
+    @app_commands.describe(
+        nom="Nom de la saison (ex. « TWW Saison 2 »)",
+        debut="Date de début au format AAAA-MM-JJ",
+    )
+    @admin_check
+    async def nouvelle_saison(
+        interaction: discord.Interaction, nom: str, debut: str
+    ):
+        try:
+            parsed = datetime.date.fromisoformat(debut.strip())
+        except ValueError:
+            await interaction.response.send_message(
+                "Date invalide. Format attendu : **AAAA-MM-JJ** (ex. 2026-03-04).",
+                ephemeral=True,
+            )
+            return
+        season = await asyncio.to_thread(
+            bot.db.add_season, nom.strip(), parsed.isoformat()
+        )
+        if season is None:
+            await interaction.response.send_message(
+                f"Une saison débute déjà le {parsed.isoformat()}.", ephemeral=True
+            )
+            return
+        await interaction.response.send_message(
+            f"✅ Saison **{season.name}** créée (début le {season.start_date}). "
+            f"Les classements la prennent désormais comme saison en cours.",
+            ephemeral=True,
+        )
+
+    @bot.tree.command(
+        name="supprimer-saison",
+        description="(Responsables) Supprime une saison Mythique+",
+        guild=guild,
+    )
+    @app_commands.describe(saison="La saison à supprimer")
+    @app_commands.autocomplete(saison=season_autocomplete(bot))
+    @admin_check
+    async def supprimer_saison(interaction: discord.Interaction, saison: str):
+        season = await asyncio.to_thread(bot.db.get_season_by_name, saison)
+        if season is None:
+            await interaction.response.send_message(
+                "Saison introuvable.", ephemeral=True
+            )
+            return
+        await asyncio.to_thread(bot.db.delete_season, season.id)
+        await interaction.response.send_message(
+            f"🗑️ Saison **{season.name}** supprimée (les clés restent en base).",
+            ephemeral=True,
+        )
+
+    @nouvelle_saison.error
+    @supprimer_saison.error
+    async def _season_admin_error(
+        interaction: discord.Interaction, error: Exception
+    ):
+        if isinstance(error, app_commands.CheckFailure):
+            msg = "⛔ Commande réservée aux responsables."
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        else:
+            await bot.report_error("Commande saison", error)
 
 
 # --------------------------------------------------------------------------- #

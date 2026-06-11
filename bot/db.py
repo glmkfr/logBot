@@ -69,6 +69,15 @@ CREATE TABLE IF NOT EXISTS member_links (
     discord_user_id INTEGER NOT NULL,
     added_at        TEXT    NOT NULL
 );
+
+-- Saisons Mythique+ : une saison débute à start_date (YYYY-MM-DD) et court
+-- jusqu'au début de la suivante. Sert à filtrer leaderboard/classement/profil.
+CREATE TABLE IF NOT EXISTS seasons (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT    NOT NULL,
+    start_date TEXT    NOT NULL UNIQUE,   -- YYYY-MM-DD
+    created_at TEXT    NOT NULL
+);
 """
 
 
@@ -99,6 +108,15 @@ class LeaderboardEntry:
     # indéterminable (ne devrait pas arriver pour une entrée présente).
     report_code: str | None = None
     fight_id: int | None = None
+
+
+@dataclass
+class Season:
+    """Une saison Mythique+ (cf. table seasons)."""
+
+    id: int
+    name: str
+    start_date: str  # YYYY-MM-DD
 
 
 class Database:
@@ -228,12 +246,15 @@ class Database:
             )
             return [(r["character_name"], r["class"]) for r in cur.fetchall()]
 
-    def player_run_rows(self, since_iso: str | None = None) -> list[sqlite3.Row]:
+    def player_run_rows(
+        self, since_iso: str | None = None, until_iso: str | None = None
+    ) -> list[sqlite3.Row]:
         """Lignes (joueur × run M+) pour les stats joueurs.
 
         Chaque ligne joint un personnage de `run_players` à son run M+ :
         report_code, fight_id, character_name, dungeon, level, timed,
-        keystone_time. `since_iso` limite aux runs publiés depuis cette date.
+        keystone_time. `since_iso`/`until_iso` (bornes sur created_at) limitent
+        à une fenêtre temporelle, ex. une saison.
         Les Row renvoyés sont détachés de la connexion (utilisables hors verrou).
         """
         query = (
@@ -244,10 +265,13 @@ class Database:
             "          AND r.fight_id = p.fight_id "
             "WHERE r.kind = 'mplus'"
         )
-        params: tuple = ()
+        params: list = []
         if since_iso:
             query += " AND r.created_at >= ?"
-            params = (since_iso,)
+            params.append(since_iso)
+        if until_iso:
+            query += " AND r.created_at < ?"
+            params.append(until_iso)
         with self._lock:
             return self._conn.execute(query, params).fetchall()
 
@@ -303,6 +327,52 @@ class Database:
                 (discord_user_id,),
             )
             return [r["character_key"] for r in cur.fetchall()]
+
+    # -- Saisons --------------------------------------------------------------
+
+    def add_season(self, name: str, start_date: str) -> Season | None:
+        """Crée une saison. Retourne None si une saison débute déjà à cette date."""
+        with self._lock:
+            try:
+                cur = self._conn.execute(
+                    "INSERT INTO seasons (name, start_date, created_at) "
+                    "VALUES (?, ?, ?)",
+                    (name, start_date, self._now()),
+                )
+                self._conn.commit()
+                return Season(id=cur.lastrowid, name=name, start_date=start_date)
+            except sqlite3.IntegrityError:
+                return None
+
+    def list_seasons(self) -> list[Season]:
+        """Saisons, de la plus ancienne à la plus récente (par date de début)."""
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT id, name, start_date FROM seasons "
+                "ORDER BY start_date ASC, id ASC"
+            )
+            return [
+                Season(id=r["id"], name=r["name"], start_date=r["start_date"])
+                for r in cur.fetchall()
+            ]
+
+    def get_season_by_name(self, name: str) -> Season | None:
+        """Retourne la saison de nom donné (insensible à la casse), ou None."""
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT id, name, start_date FROM seasons "
+                "WHERE name = ? COLLATE NOCASE",
+                (name,),
+            )
+            r = cur.fetchone()
+            return Season(id=r["id"], name=r["name"], start_date=r["start_date"]) if r else None
+
+    def delete_season(self, season_id: int) -> bool:
+        """Supprime une saison par id. Retourne False si elle n'existe pas."""
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM seasons WHERE id = ?", (season_id,))
+            self._conn.commit()
+            return cur.rowcount > 0
 
     # -- Fils de raid ---------------------------------------------------------
 
@@ -401,45 +471,66 @@ class Database:
             best_dungeon=best_dungeon,
         )
 
-    def leaderboard(self) -> list[LeaderboardEntry]:
+    def leaderboard(
+        self, since_iso: str | None = None, until_iso: str | None = None
+    ) -> list[LeaderboardEntry]:
         """Classement : meilleure clé timée par donjon (niveau, puis temps).
 
-        Pour chaque donjon, on retient le niveau timé le plus élevé jamais
-        publié, le meilleur (plus court) temps à ce niveau et le nombre total de
-        clés timées. Les donjons sans aucune clé timée sont absents.
+        Pour chaque donjon, on retient le niveau timé le plus élevé publié dans
+        la fenêtre [since_iso, until_iso[ (sur created_at, ex. une saison), le
+        meilleur (plus court) temps à ce niveau et le nombre total de clés
+        timées. Sans bornes, le classement porte sur tout l'historique.
+        Les donjons sans aucune clé timée dans la fenêtre sont absents.
         """
-        query = """
+
+        def _window(alias: str) -> tuple[str, list]:
+            """Clause temporelle sur created_at pour un alias de la table runs."""
+            clause, values = "", []
+            if since_iso:
+                clause += f" AND {alias}.created_at >= ?"
+                values.append(since_iso)
+            if until_iso:
+                clause += f" AND {alias}.created_at < ?"
+                values.append(until_iso)
+            return clause, values
+
+        c_clause, c_vals = _window("c")
+        r_clause, r_vals = _window("r")
+        m_clause, m_vals = _window("m")
+        query = f"""
             SELECT r.dungeon                AS dungeon,
                    r.level                  AS best_level,
                    MIN(r.keystone_time)     AS best_time,
                    (SELECT COUNT(*) FROM runs c
                      WHERE c.kind = 'mplus' AND c.timed = 1
-                       AND c.dungeon IS r.dungeon) AS timed_count
+                       AND c.dungeon IS r.dungeon{c_clause}) AS timed_count
             FROM runs r
-            WHERE r.kind = 'mplus' AND r.timed = 1
+            WHERE r.kind = 'mplus' AND r.timed = 1{r_clause}
               AND r.level = (
                   SELECT MAX(m.level) FROM runs m
-                  WHERE m.kind = 'mplus' AND m.timed = 1 AND m.dungeon IS r.dungeon
+                  WHERE m.kind = 'mplus' AND m.timed = 1
+                    AND m.dungeon IS r.dungeon{m_clause}
               )
             GROUP BY r.dungeon
             ORDER BY best_level DESC, best_time IS NULL, best_time ASC, dungeon ASC
         """
+        record_clause, record_vals = _window("runs")
         with self._lock:
-            cur = self._conn.execute(query)
+            cur = self._conn.execute(query, c_vals + r_vals + m_vals)
             rows = cur.fetchall()
             entries: list[LeaderboardEntry] = []
             for row in rows:
                 # Identifie le run précis qui détient le record (niveau record,
                 # puis temps le plus court) pour pouvoir retrouver son roster.
                 record = self._conn.execute(
-                    """
+                    f"""
                     SELECT report_code, fight_id FROM runs
                     WHERE kind = 'mplus' AND timed = 1
-                      AND dungeon IS ? AND level = ?
+                      AND dungeon IS ? AND level = ?{record_clause}
                     ORDER BY keystone_time IS NULL, keystone_time ASC
                     LIMIT 1
                     """,
-                    (row["dungeon"], row["best_level"]),
+                    [row["dungeon"], row["best_level"], *record_vals],
                 ).fetchone()
                 entries.append(
                     LeaderboardEntry(

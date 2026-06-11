@@ -47,6 +47,10 @@ statistiques, et boutons pour ajouter route/VoD a posteriori.
   donjon, partenaires fréquents). Les **pseudos** apparaissent aussi dans l'embed
   de chaque fil de run, et un **« Joueur de la semaine »** est mis en avant dans le
   récap hebdomadaire.
+- **Saisons M+** : les classements (`/leaderboard`, `/classement-joueurs`, `/profil`)
+  portent par défaut sur la **saison en cours**, avec option pour une autre saison ou
+  tout l'historique. Gestion via **`/nouvelle-saison`** / **`/supprimer-saison`**
+  (réservées aux rôles `ADMIN_ROLE_IDS`).
 - **`/aide`** : récapitulatif du bot et de ses commandes, directement sur Discord.
 - **Auto-détection** : coller un lien Warcraft Logs dans un canal configuré
   (`AUTO_DETECT_CHANNEL_IDS`) crée les fils automatiquement, sans taper `/logs`.
@@ -113,6 +117,7 @@ Toute la configuration passe par `.env` (jamais de secret en dur). Variables :
 | `DEBUG` | non | `1` pour des logs verbeux (jamais de secret) |
 | `MIN_KEY_LEVEL` | non | Niveau M+ minimum pour créer un fil (défaut 2) |
 | `ALLOWED_ROLE_IDS` | non | IDs de rôles autorisés à `/logs`, séparés par des virgules. Vide = tout le monde |
+| `ADMIN_ROLE_IDS` | non | IDs de rôles « responsables » autorisés aux commandes d'admin (saisons…). Vide = repli sur la permission Discord *Gérer le serveur* |
 | `DATABASE_PATH` | non | Chemin SQLite (défaut `data/bot_logs.db`) |
 | `LOG_CHANNEL_ID` | non | Canal Discord où relayer les erreurs |
 | `LOG_FILE` | non | Fichier de log (défaut `logs/bot.log`) |
@@ -181,12 +186,18 @@ Les slash-commands sont synchronisées sur le `GUILD_ID` au démarrage
   `MIN_KEY_LEVEL` du `.env`). Ex. `niveau_min:15` ⇒ uniquement les +15 et plus.
 - `/stats [periode: semaine|mois|tout]` — statistiques M+ (avec meilleure clé
   timée et, sur la vue globale, la tendance des 6 dernières semaines).
-- `/leaderboard` — meilleure clé timée par donjon (niveau record + meilleur temps),
-  avec les pseudos Discord des joueurs de la clé record présents sur le serveur.
-- `/classement-joueurs` — classement des **joueurs** par meilleure clé timée, nombre
-  de clés et niveau moyen (Top 15).
-- `/profil [membre]` — statistiques d'un joueur : clés, % timées, niveau moyen,
+- `/leaderboard [saison]` — meilleure clé timée par donjon (niveau record + meilleur
+  temps), avec les pseudos Discord des joueurs de la clé record présents sur le serveur.
+- `/classement-joueurs [saison]` — classement des **joueurs** par meilleure clé timée,
+  nombre de clés et niveau moyen (Top 15).
+- `/profil [membre] [saison]` — statistiques d'un joueur : clés, % timées, niveau moyen,
   meilleure clé par donjon et partenaires fréquents (par défaut : toi).
+- `/saisons` — liste les saisons M+. Les classements ci-dessus portent par défaut sur
+  la **saison en cours** ; le paramètre `saison` permet d'en choisir une autre ou
+  `Tout l'historique`.
+- `/nouvelle-saison nom:<str> debut:<AAAA-MM-JJ>` et `/supprimer-saison saison:<nom>`
+  — gestion des saisons, **réservées aux rôles `ADMIN_ROLE_IDS`** (ou perm. *Gérer le
+  serveur* si non configuré).
 - `/lier personnage:<nom>` — associe un personnage WoW à ton compte Discord pour
   apparaître dans les classements et les fils (le royaume est ignoré). `/delier`
   retire l'association, `/mes-persos` liste tes personnages liés.
