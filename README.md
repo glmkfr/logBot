@@ -313,7 +313,9 @@ Une **intégration continue** GitHub Actions (`.github/workflows/ci.yml`) lance
 les tests (Python 3.10 et 3.12) et vérifie le build Docker à chaque push/PR.
 
 Les tests couvrent le parsing d'URL, la validation de domaine, l'extraction M+/raid, la
-désambiguïsation des titres, le formatage et l'anti-doublon SQLite.
+désambiguïsation des titres, le formatage, l'anti-doublon SQLite, les classements
+(joueurs, saisons, records), la progression de raid, et les **slash-commands**
+(exécutées contre une base en mémoire via de fausses interactions).
 
 ## Hypothèses & points à vérifier
 
