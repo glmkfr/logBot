@@ -246,6 +246,18 @@ class Database:
             )
             return [(r["character_name"], r["class"]) for r in cur.fetchall()]
 
+    def distinct_character_names(self) -> list[str]:
+        """Noms de personnages distincts vus dans les rosters (ordre alpha).
+
+        Sert à l'autocomplétion de /lier (proposer les persos déjà aperçus).
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT DISTINCT character_name FROM run_players "
+                "ORDER BY character_name COLLATE NOCASE"
+            )
+            return [r["character_name"] for r in cur.fetchall()]
+
     def player_run_rows(
         self, since_iso: str | None = None, until_iso: str | None = None
     ) -> list[sqlite3.Row]:

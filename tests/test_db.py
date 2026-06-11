@@ -208,6 +208,15 @@ def test_seasons_crud(tmp_path):
     db.close()
 
 
+def test_distinct_character_names(tmp_path):
+    db = _db(tmp_path)
+    assert db.distinct_character_names() == []
+    db.record_run_players("A", 1, [("Bob", "Priest"), ("Alice", "Mage")])
+    db.record_run_players("A", 2, [("Alice", "Mage")])  # doublon -> une seule fois
+    assert db.distinct_character_names() == ["Alice", "Bob"]  # tri alpha
+    db.close()
+
+
 def test_member_links(tmp_path):
     db = _db(tmp_path)
     assert db.get_character_link("alice") is None
